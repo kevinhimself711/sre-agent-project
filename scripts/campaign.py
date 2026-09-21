@@ -105,8 +105,14 @@ def choose_candidate(records):
         summaries[variant] = {
             "successes": sum(r["success"] is True for r in rows),
             "score": sum(r.get("score") or 0 for r in rows) / len(rows),
-            "agent_tokens": sum(
-                r["tokens"].get("input", 0) + r["tokens"].get("output", 0) for r in rows
+            "agent_tokens": (
+                sum(r["tokens"]["input"] + r["tokens"]["output"] for r in rows)
+                if all(
+                    isinstance(r["tokens"].get(key), int)
+                    for r in rows
+                    for key in ("input", "output")
+                )
+                else None
             ),
         }
 
@@ -115,17 +121,20 @@ def choose_candidate(records):
         return (
             -row["successes"],
             -row["score"],
-            row["agent_tokens"],
+            row["agent_tokens"] if row["agent_tokens"] is not None else float("inf"),
             2 if variant == "combined" else 1,
             VARIANTS.index(variant),
         )
 
     chosen = min(VARIANTS[1:], key=rank)
     base, candidate = summaries["baseline"], summaries[chosen]
-    improved = (candidate["successes"], candidate["score"], -candidate["agent_tokens"]) > (
-        base["successes"],
-        base["score"],
-        -base["agent_tokens"],
+    quality = (candidate["successes"], candidate["score"])
+    base_quality = (base["successes"], base["score"])
+    improved = quality > base_quality or (
+        quality == base_quality
+        and candidate["agent_tokens"] is not None
+        and base["agent_tokens"] is not None
+        and candidate["agent_tokens"] < base["agent_tokens"]
     )
     if not improved:
         chosen = "recovery"
@@ -204,6 +213,10 @@ def collect_result(directory, job, returncode):
                 (u.get("prompt_tokens_details") or {}).get("cached_tokens", 0) or 0 for u in usage
             ),
         }
+        if not usage or any(
+            u.get("prompt_tokens") is None or u.get("completion_tokens") is None for u in usage
+        ):
+            item["tokens"] = {"input": None, "output": None, "cached": None}
         item["model_calls"] = len(usage)
         tools = [e["result"] for e in events if e["event"] == "tool_end"]
         item["tool_calls"] = len(tools)

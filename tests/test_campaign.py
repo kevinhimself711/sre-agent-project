@@ -3,7 +3,14 @@ import json
 from pathlib import Path
 
 import pytest
-from campaign import collect_result, completed, load_manifest, run_campaign, schedule
+from campaign import (
+    choose_candidate,
+    collect_result,
+    completed,
+    load_manifest,
+    run_campaign,
+    schedule,
+)
 from cluster_guard import cluster_lock
 from filelock import Timeout
 
@@ -107,6 +114,19 @@ def test_frozen_configuration_cannot_drift(tmp_path):
     run_campaign(SPEC, "dev", tmp_path, success, lambda: {}, {"commit": "a"})
     with pytest.raises(RuntimeError, match="provenance changed"):
         run_campaign(SPEC, "dev", tmp_path, success, lambda: {}, {"commit": "b"}, resume=True)
+
+
+def test_missing_usage_is_not_zero_cost_improvement():
+    records = []
+    for job in schedule(SPEC, "dev"):
+        row = {**success(job, None), "cleanup_ok": True}
+        if job["variant"] == "review":
+            row["tokens"] = {}
+        records.append(row)
+    result = choose_candidate(records)
+    assert result["summaries"]["review"]["agent_tokens"] is None
+    assert result["candidate"] == "recovery"
+    assert result["observed_dev_improvement"] is False
 
 
 def test_cli_and_workflow_share_exclusive_lock(tmp_path, monkeypatch):
