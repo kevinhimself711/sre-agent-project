@@ -3,6 +3,7 @@
 import argparse
 import json
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 from statistics import mean
 
@@ -19,6 +20,8 @@ def audit(state, directory):
         files = list(attempt.glob(f"holmes/{row['case']}/run_*/*_results.csv"))
         if not files:
             observations.append({"key": row["key"], "trace": "missing"})
+            if row.get("data") == "complete" or row.get("execution") == "complete":
+                issues.append(f"{row['key']}: completed result missing from local evidence")
             continue
         run = files[-1].parent
         for name, expected in row.get("artifacts", {}).items():
@@ -26,6 +29,9 @@ def audit(state, directory):
                 issues.append(f"{row['key']}: artifact mismatch: {name}")
         trace = run / "holmes.events.jsonl"
         if not trace.exists():
+            observations.append({"key": row["key"], "trace": "missing"})
+            if row.get("data") == "complete":
+                issues.append(f"{row['key']}: accepted trace missing from local evidence")
             continue
         events = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()]
         reviews = [
@@ -58,6 +64,13 @@ def audit(state, directory):
             ):
                 issues.append(f"{row['key']}: SFT sample differs from the actual model input")
         tools = [e["result"]["result"] for e in events if e["event"] == "tool_end"]
+        starts = [e["timestamp"] for e in events if e["event"] == "tool_catalog"]
+        ends = [e["timestamp"] for e in events if e["event"] == "agent_final"]
+        investigation_seconds = (
+            (datetime.fromisoformat(ends[-1]) - datetime.fromisoformat(starts[0])).total_seconds()
+            if starts and ends
+            else None
+        )
         rejected = [t for t in tools if str(t.get("data", "")).startswith("Command Rejected")]
         if row["variant"] in {"recovery", "combined"} and any(
             t["status"] != "error" for t in rejected
@@ -70,6 +83,7 @@ def audit(state, directory):
                 "reviews": len(reviews),
                 "drafts_excluded": len(drafts),
                 "sft_samples": len(samples),
+                "investigation_seconds": investigation_seconds,
                 "tool_errors": sum(t["status"] == "error" for t in tools),
                 "classified_rejections": [t.get("error") for t in rejected],
             }
@@ -85,6 +99,9 @@ def measured_mean(rows, field):
 
 
 def render(state, audit_result):
+    durations = {
+        r.get("attempt"): r.get("investigation_seconds") for r in audit_result["observations"]
+    }
     groups = defaultdict(list)
     for phase in ("dev", "validation"):
         for row in selected_records(state, phase):
@@ -97,7 +114,8 @@ def render(state, audit_result):
         "",
         "成功数和均值仅覆盖已完成且复位通过的有效观察；Agent 超时计失败。缺测单列，"
         "原始失败 attempt 保留在 JSON 中。token 均值包含可捕获的 Agent 辅助调用；"
-        "缓存 token 是输入 token 的子集。账单费用未知。",
+        "缓存 token 是输入 token 的子集。调查耗时为 tool_catalog 至 agent_final 的墙钟跨度，"
+        "排除环境准备、MCP 初始化和评分；上游完整阶段耗时另保存在 JSON。账单费用未知。",
         "",
         "| 阶段 | 案例 | 配置 | 有效/计划 | 成功 | composite 均值 | 输入 token | 输出 token | 缓存 token | 调查秒 | 拒绝/次 | 重复调用/次 |",
         "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
@@ -107,11 +125,7 @@ def render(state, audit_result):
         metrics = [measured_mean(rows, lambda r: r.get("score"))]
         for key in ("input", "output", "cached"):
             metrics.append(measured_mean(rows, lambda r, k=key: r.get("tokens", {}).get(k)))
-        metrics.append(
-            measured_mean(
-                rows, lambda r: r.get("phases", {}).get("phase.stage:diagnosis.duration_s")
-            )
-        )
+        metrics.append(measured_mean(rows, lambda r: durations.get(r["attempt_number"])))
         for key in ("rejections", "repeated_tool_calls"):
             metrics.append(measured_mean(rows, lambda r, k=key: r.get(k)))
         lines.append(

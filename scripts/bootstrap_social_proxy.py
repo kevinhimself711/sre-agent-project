@@ -11,6 +11,7 @@ import select
 import socket
 import socketserver
 import subprocess
+import sys
 import threading
 import time
 from urllib.parse import urlparse
@@ -21,6 +22,9 @@ from project_paths import project_root
 
 def main():
     root = project_root()
+    sys.path.insert(0, str(root / "repos/sregym"))
+    from sregym.service.rollout import deployment_rollout_complete
+
     k = [str(root / "bin/kubectl"), "--kubeconfig", str(root / "configs/kubeconfig")]
     assert (
         subprocess.check_output([*k, "config", "current-context"], text=True).strip()
@@ -152,12 +156,7 @@ def main():
                         ]
                     )
                 )
-                s = d.get("status", {})
-                ready &= (
-                    s.get("observedGeneration", 0) >= d["metadata"]["generation"]
-                    and s.get("updatedReplicas") == 1
-                    and s.get("readyReplicas") == 1
-                )
+                ready &= deployment_rollout_complete(d)
             if ready:
                 print(
                     "Both init containers finished at recorded source revision; temporary proxy closing.",
