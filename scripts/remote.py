@@ -9,28 +9,23 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import select
 import shlex
 import socket
-import select
 import sys
 import threading
 import time
 import warnings
 from pathlib import Path
 
+import paramiko
+
 ROOT = Path(__file__).resolve().parents[1]
 warnings.filterwarnings("ignore", module="paramiko.*")
-try:
-    import paramiko
-except ImportError:
-    sys.path.insert(0, str(ROOT / ".research/python-deps"))
-    import paramiko
 
 
 def connect(node: str):
-    raw = (ROOT / "docs/Computing Resources" / f"{node} info.txt").read_text(
-        encoding="utf-8-sig"
-    )
+    raw = (ROOT / "docs/Computing Resources" / f"{node} info.txt").read_text(encoding="utf-8-sig")
     hosts = re.findall(r"(?:\d{1,3}\.){3}\d{1,3}", raw)
     ports = [int(x) for x in re.findall(r"(?im)^Port:\s*(\d+)", raw)]
     user = re.search(r"(?im)^User:\s*(.+)", raw).group(1).strip()
@@ -84,9 +79,7 @@ def main():
 
             def relay(channel):
                 try:
-                    with socket.create_connection(
-                        ("127.0.0.1", 7897), timeout=15
-                    ) as sock:
+                    with socket.create_connection(("127.0.0.1", 7897), timeout=15) as sock:
                         while True:
                             readable, _, _ = select.select([sock, channel], [], [], 30)
                             for source in readable:
@@ -101,9 +94,7 @@ def main():
                 while transport.is_active():
                     channel = transport.accept(1)
                     if channel is not None:
-                        threading.Thread(
-                            target=relay, args=(channel,), daemon=True
-                        ).start()
+                        threading.Thread(target=relay, args=(channel,), daemon=True).start()
 
             threading.Thread(target=accept, daemon=True).start()
         if args.action in ("put", "get"):

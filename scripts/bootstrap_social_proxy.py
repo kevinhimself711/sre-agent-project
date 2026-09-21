@@ -13,13 +13,14 @@ import socketserver
 import subprocess
 import threading
 import time
-from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import urlopen
 
+from project_paths import project_root
+
 
 def main():
-    root = Path.home() / "sre-agent-project"
+    root = project_root()
     k = [str(root / "bin/kubectl"), "--kubeconfig", str(root / "configs/kubeconfig")]
     assert (
         subprocess.check_output([*k, "config", "current-context"], text=True).strip()
@@ -28,14 +29,12 @@ def main():
     with urlopen(
         f"http://127.0.0.1:{os.environ.get('API_PORT', '18000')}/status", timeout=10
     ) as response:
-        assert (
-            json.load(response)["stage"] == "setup"
-        ), "Do not modify initialization after fault injection"
+        assert json.load(response)["stage"] == "setup", (
+            "Do not modify initialization after fault injection"
+        )
     proxy = urlparse(os.environ["https_proxy"])
     assert proxy.hostname == "127.0.0.1"
-    network = json.loads(
-        subprocess.check_output(["docker", "network", "inspect", "kind"])
-    )[0]
+    network = json.loads(subprocess.check_output(["docker", "network", "inspect", "kind"]))[0]
     gateway = next(
         c["Gateway"]
         for c in network["IPAM"]["Config"]
@@ -47,9 +46,7 @@ def main():
 
     class Handler(socketserver.BaseRequestHandler):
         def handle(self):
-            with socket.create_connection(
-                (proxy.hostname, proxy.port), timeout=15
-            ) as upstream:
+            with socket.create_connection((proxy.hostname, proxy.port), timeout=15) as upstream:
                 while True:
                     readable, _, _ = select.select([self.request, upstream], [], [], 30)
                     if not readable:
@@ -58,9 +55,7 @@ def main():
                         data = source.recv(65536)
                         if not data:
                             return
-                        (upstream if source is self.request else self.request).sendall(
-                            data
-                        )
+                        (upstream if source is self.request else self.request).sendall(data)
 
     class Server(socketserver.ThreadingTCPServer):
         daemon_threads = True
@@ -172,9 +167,7 @@ def main():
                 return
             time.sleep(3)
         server.shutdown()
-        raise TimeoutError(
-            "Social Network initialization did not finish within 600 seconds"
-        )
+        raise TimeoutError("Social Network initialization did not finish within 600 seconds")
 
 
 if __name__ == "__main__":

@@ -47,9 +47,7 @@ def main():
                 }
             )
         k("wait", "-n", NS, "--for=condition=Ready", "pod", "--all", "--timeout=90s")
-        ip = k(
-            "get", "pod", "server", "-n", NS, "-o", "jsonpath={.status.podIP}"
-        ).stdout
+        ip = k("get", "pod", "server", "-n", NS, "-o", "jsonpath={.status.podIP}").stdout
 
         def reachable():
             return (

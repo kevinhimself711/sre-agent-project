@@ -4,7 +4,8 @@ import argparse
 import concurrent.futures
 import hashlib
 import subprocess
-from pathlib import Path
+
+from project_paths import project_root
 
 
 def main():
@@ -12,15 +13,14 @@ def main():
     parser.add_argument("images", nargs="+")
     parser.add_argument("--destination", choices=["kind", "host"], default="kind")
     args = parser.parse_args()
-    root = Path.home() / "sre-agent-project"
+    root = project_root()
     cache = root / "artifacts/images"
     cache.mkdir(parents=True, exist_ok=True)
 
     def fetch(image):
         pinned = "@sha256:" in image
         archive = cache / (
-            hashlib.sha256(image.encode()).hexdigest()[:16]
-            + (".oci.tar" if pinned else ".tar")
+            hashlib.sha256(image.encode()).hexdigest()[:16] + (".oci.tar" if pinned else ".tar")
         )
         if not archive.exists():
             temporary = archive.with_suffix(".partial.tar")

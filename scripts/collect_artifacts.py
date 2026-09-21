@@ -1,36 +1,42 @@
 """Download run evidence only; omit credentials, image archives and build contexts."""
 
-from pathlib import Path, PurePosixPath
+import argparse
 import re
 import stat
+from pathlib import Path, PurePosixPath
 
 from remote import ROOT, connect
 
 
 def main():
+    parser = argparse.ArgumentParser(__doc__)
+    parser.add_argument("--remote-root", help="Absolute evaluation workspace on pci-2")
+    parser.add_argument("--output", type=Path, default=ROOT / "artifacts/pci-2")
+    parser.add_argument("--campaign", action="store_true")
+    args = parser.parse_args()
     client, password = connect("pci-2")
     secrets = [password.encode()]
     key_file = ROOT / "Bailian API.txt"
     if key_file.exists():
         secrets.extend(
             x.encode()
-            for x in re.findall(
-                r"sk-[A-Za-z0-9_-]+", key_file.read_text(encoding="utf-8-sig")
-            )
+            for x in re.findall(r"sk-[A-Za-z0-9_-]+", key_file.read_text(encoding="utf-8-sig"))
         )
     count = 0
     try:
         with client.open_sftp() as sftp:
-            base = PurePosixPath(sftp.normalize(".")) / "sre-agent-project"
-            local = ROOT / "artifacts" / "pci-2"
+            base = (
+                PurePosixPath(args.remote_root)
+                if args.remote_root
+                else PurePosixPath(sftp.normalize(".")) / "sre-agent-project"
+            )
+            local = args.output
 
             def download(remote, target):
                 nonlocal count
                 data = sftp.open(str(remote), "rb").read()
                 if any(secret in data for secret in secrets):
-                    raise RuntimeError(
-                        f"Credential detected; refusing local copy: {remote.name}"
-                    )
+                    raise RuntimeError(f"Credential detected; refusing local copy: {remote.name}")
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(data)
                 count += 1
@@ -50,9 +56,11 @@ def main():
                     ".xml",
                     ".txt",
                 }:
-                    download(
-                        base / "artifacts" / entry.filename, local / entry.filename
-                    )
+                    download(base / "artifacts" / entry.filename, local / entry.filename)
+            if args.campaign:
+                tree(base / "artifacts/campaigns", local / "campaigns")
+                print(f"Downloaded {count} campaign evidence files without known credentials.")
+                return
             tree(base / "repos/sregym/results", local / "results")
             try:
                 sftp.stat(str(base / "artifacts/trace-export"))

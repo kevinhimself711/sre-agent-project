@@ -1,0 +1,105 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      code: ${{ steps.changes.outputs.code }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          version: '0.10.12'
+          python-version: '3.12'
+          enable-cache: true
+      - run: uv sync --frozen
+      - id: changes
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          uv run python - <<'PY'
+          import os, subprocess
+          base = os.environ.get('BASE', '')
+          code = True
+          if base and set(base) != {'0'}:
+              result = subprocess.run(['git', 'diff', '--name-only', base, 'HEAD'], capture_output=True, text=True)
+              if result.returncode == 0:
+                  code = any(not (p.startswith('docs/') or p.endswith('.md')) for p in result.stdout.splitlines())
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'code={str(code).lower()}\n')
+          PY
+      - run: uv run pre-commit run --all-files
+      - run: uv run pytest --junitxml=test-results/root.xml
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: root-tests
+          path: test-results/
+          retention-days: 14
+  upstream:
+    needs: checks
+    if: needs.checks.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        repo: [holmesgpt, sregym]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          version: '0.10.12'
+          python-version: '3.12'
+          enable-cache: true
+          cache-dependency-glob: |
+            configs/upstreams.json
+            patches/*.patch
+            uv.lock
+      - run: uv run python scripts/init_repos.py --only "${UPSTREAM}" --skip-applications
+        env:
+          UPSTREAM: ${{ matrix.repo }}
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cache/pypoetry
+            ~/.cache/pip
+          key: deps-${{ runner.os }}-py312-${{ matrix.repo }}-${{ hashFiles('configs/upstreams.json', 'repos/**/poetry.lock', 'repos/**/uv.lock') }}
+      - run: uv run python scripts/ci_upstream.py "${UPSTREAM}"
+        env:
+          UPSTREAM: ${{ matrix.repo }}
+          LITELLM_LOCAL_MODEL_COST_MAP: 'True'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: tests-${{ matrix.repo }}
+          path: test-results/
+          retention-days: 14
+  ci-gate:
+    if: always()
+    needs: [checks, upstream]
+    runs-on: ubuntu-24.04
+    steps:
+      - env:
+          CHECKS: ${{ needs.checks.result }}
+          UPSTREAM: ${{ needs.upstream.result }}
+          CODE: ${{ needs.checks.outputs.code }}
+        run: |
+          test "$CHECKS" = success
+          if [ "$CODE" = true ]; then test "$UPSTREAM" = success; else test "$UPSTREAM" = skipped; fi
+          echo 'Project checks and required offline regressions passed.' >> "$GITHUB_STEP_SUMMARY"

@@ -1,19 +1,19 @@
 """Summarize official scores and validate real Holmes exports without re-running cases."""
 
-import ast
 import argparse
-from collections import Counter
+import ast
 import csv
 import hashlib
 import json
-from pathlib import Path
+from collections import Counter
 
+from llm_backend.usage_log import summarize_usage
+from project_paths import project_root
 from sregym.traces import store
 from sregym.traces.holmes_export import export_run
 from sregym.traces.postprocess import write_trajectory
-from llm_backend.usage_log import summarize_usage
 
-ROOT = Path.home() / "sre-agent-project"
+ROOT = project_root()
 
 
 def decode(value):
@@ -59,35 +59,26 @@ def main():
             acceptance = export_run(run)
             first = (run / "sft-format-samples.jsonl").read_bytes()
             export_run(run)
-            assert (
-                first == (run / "sft-format-samples.jsonl").read_bytes()
-            ), "Export changed on repetition"
+            assert first == (run / "sft-format-samples.jsonl").read_bytes(), (
+                "Export changed on repetition"
+            )
             item["data_acceptance"] = acceptance
             events = [
-                json.loads(line)
-                for line in (run / "holmes.events.jsonl").read_text().splitlines()
+                json.loads(line) for line in (run / "holmes.events.jsonl").read_text().splitlines()
             ]
-            session_id = next(
-                e["session_id"] for e in events if e["event"] == "episode_start"
-            )
+            session_id = next(e["session_id"] for e in events if e["event"] == "episode_start")
             sessions.append(session_id)
             item["session_id"] = session_id
             item["model_calls"] = sum(e["event"] == "model_request" for e in events)
             item["tool_calls"] = sum(e["event"] == "tool_start" for e in events)
             item["model_seconds"] = sum(
-                e.get("elapsed_seconds", 0)
-                for e in events
-                if e["event"] == "model_response"
+                e.get("elapsed_seconds", 0) for e in events if e["event"] == "model_response"
             )
             item["tool_seconds"] = sum(
                 e.get("elapsed_seconds", 0) for e in events if e["event"] == "tool_end"
             )
             effective_inputs = json.dumps(
-                [
-                    e["request"]["messages"]
-                    for e in events
-                    if e["event"] == "model_request"
-                ]
+                [e["request"]["messages"] for e in events if e["event"] == "model_request"]
             )
             assert not any(
                 case_id in effective_inputs
@@ -106,12 +97,8 @@ def main():
             ("holmes", "network_policy_block"): 2,
             ("holmes", "wrong_service_selector_social_network"): 1,
         }, "Campaign differs from the approved finite case count"
-        assert all(
-            r["run_status"] == "complete" and not r["cleanup_failed"] for r in rows
-        )
-        assert all(
-            not r["data_acceptance"]["issues"] for r in rows if r["agent"] == "holmes"
-        )
+        assert all(r["run_status"] == "complete" and not r["cleanup_failed"] for r in rows)
+        assert all(not r["data_acceptance"]["issues"] for r in rows if r["agent"] == "holmes")
     db = results / "traces.db"
     store.ingest_tree(results, db)
     with store.connect(db) as conn:
@@ -127,9 +114,7 @@ def main():
         "idempotent_ingestion": True,
         "unique_holmes_sessions": len(sessions),
     }
-    (ROOT / "artifacts/results-audit.json").write_text(
-        json.dumps(summary, indent=2) + "\n"
-    )
+    (ROOT / "artifacts/results-audit.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary, indent=2))
 
 

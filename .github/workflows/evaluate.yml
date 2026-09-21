@@ -1,0 +1,73 @@
+name: Frozen diagnosis campaign
+on:
+  workflow_dispatch:
+    inputs:
+      phase:
+        type: choice
+        description: Frozen campaign phase
+        options: [dev, validation]
+        required: true
+      resume:
+        type: boolean
+        default: false
+        description: Reconcile previous attempts before resuming
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: pci-2-sre-agent-dev
+  cancel-in-progress: false
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require successful CI for this exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          gh api "repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$SHA&status=success" --jq '.workflow_runs | length' | grep -Eq '^[1-9][0-9]*$'
+  evaluate:
+    needs: verify
+    runs-on: [self-hosted, linux, x64, sre-agent-pci2]
+    timeout-minutes: 360
+    env:
+      AGENT_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
+      JUDGE_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
+      DASHSCOPE_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Reconstruct persistent evaluation workspace
+        run: |
+          export PATH="$HOME/sre-agent-project/tools-venv/bin:$PATH"
+          python3 scripts/prepare_eval_workspace.py
+      - name: Build isolated agent image
+        run: |
+          source "$SRE_PROJECT_ROOT/configs/baseline.env"
+          python3 "$SRE_PROJECT_ROOT/scripts/build_agent_image.py"
+      - name: Native integration smoke tests (once per frozen commit)
+        run: |
+          if [ ! -f "$SRE_PROJECT_ROOT/artifacts/native-smoke.complete" ]; then
+            bash "$SRE_PROJECT_ROOT/scripts/run_native_evals.sh" > "$SRE_PROJECT_ROOT/artifacts/native-smoke.log" 2>&1
+            touch "$SRE_PROJECT_ROOT/artifacts/native-smoke.complete"
+          fi
+      - name: Run bounded campaign
+        env:
+          PHASE: ${{ inputs.phase }}
+          RESUME: ${{ inputs.resume }}
+        run: |
+          source "$SRE_PROJECT_ROOT/configs/baseline.env"
+          args=()
+          if [ "$RESUME" = true ]; then args+=(--resume); fi
+          "$SRE_PROJECT_ROOT/.venv/bin/python" "$SRE_PROJECT_ROOT/scripts/campaign.py" --manifest "$SRE_PROJECT_ROOT/configs/campaign-20260921.json" --phase "$PHASE" "${args[@]}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: campaign-${{ inputs.phase }}-${{ github.run_attempt }}
+          path: ${{ env.SRE_PROJECT_ROOT }}/artifacts/publish/
+          retention-days: 30

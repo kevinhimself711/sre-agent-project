@@ -2,11 +2,13 @@
 
 import hashlib
 import json
+import os
 import subprocess
-from pathlib import Path
 from datetime import datetime, timezone
 
-root = Path.home() / "sre-agent-project"
+from project_paths import project_root
+
+root = project_root()
 timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 data = {
     "schema_version": 1,
@@ -46,7 +48,7 @@ data["agent_image"] = json.loads(
             "docker",
             "image",
             "inspect",
-            "sre-holmes-agent:baseline",
+            os.environ.get("SRE_AGENT_IMAGE", "sre-holmes-agent:baseline"),
             "--format",
             "{{json .Id}}",
         ]
