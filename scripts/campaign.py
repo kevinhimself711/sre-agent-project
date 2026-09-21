@@ -11,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from cluster_guard import cluster_lock, health_snapshot
+from cluster_guard import cluster_lock, cluster_subprocess_options, health_snapshot
 from project_paths import project_root
 
 VARIANTS = ("baseline", "review", "recovery", "combined")
@@ -259,6 +259,7 @@ def run_one(root, spec, job, directory):
             stdout=output,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            **cluster_subprocess_options(),
         )
         # Network helpers only affect environment initialization, never the agent's permissions.
         helpers.append(
@@ -268,6 +269,7 @@ def run_one(root, spec, job, directory):
                 stdout=output,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
+                **cluster_subprocess_options(),
             )
         )
         try:
