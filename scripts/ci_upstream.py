@@ -18,16 +18,22 @@ def main():
         "LITELLM_LOCAL_MODEL_COST_MAP": "True",
         "POETRY_VIRTUALENVS_IN_PROJECT": "true",
     }
+    # uv run activates the project's environment; upstreams must not install into it.
+    env.pop("VIRTUAL_ENV", None)
     if name == "holmesgpt":
         subprocess.run(["uv", "tool", "install", "poetry==2.4.3"], check=True)
+        poetry = str(
+            Path(subprocess.check_output(["uv", "tool", "dir", "--bin"], text=True).strip())
+            / "poetry"
+        )
         subprocess.run(
-            ["uv", "tool", "run", "poetry", "env", "use", sys.executable],
+            [poetry, "env", "use", sys.executable],
             cwd=repo,
             env=env,
             check=True,
         )
         subprocess.run(
-            ["uv", "tool", "run", "poetry", "install", "--with", "dev", "--no-interaction"],
+            [poetry, "install", "--with", "dev", "--no-interaction"],
             cwd=repo,
             env=env,
             check=True,
