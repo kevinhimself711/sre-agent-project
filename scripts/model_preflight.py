@@ -9,9 +9,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-BASE = os.environ.get(
-    "AGENT_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1"
-)
+BASE = os.environ.get("AGENT_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -101,15 +99,11 @@ def main():
             detail = error.read().decode(errors="replace").replace(key, "[REDACTED]")
             entry.update(status="http_error", code=error.code, detail=detail[:600])
         except Exception as error:
-            entry.update(
-                status="error", detail=str(error).replace(key, "[REDACTED]")[:300]
-            )
+            entry.update(status="error", detail=str(error).replace(key, "[REDACTED]")[:300])
         records.append(entry)
     destination = ROOT / "artifacts/model-preflight.json"
     destination.parent.mkdir(exist_ok=True)
-    destination.write_text(
-        json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    destination.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(records, ensure_ascii=False, indent=2))
     if not records or records[-1]["status"] != "ok":
         raise SystemExit(1)

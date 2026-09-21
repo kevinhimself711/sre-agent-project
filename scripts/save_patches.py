@@ -17,13 +17,9 @@ def main():
     manifest = {}
     for name, upstream in upstreams.items():
         repo = ROOT / "repos" / name
-        head = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=repo, text=True
-        ).strip()
+        head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
         if head != upstream["commit"]:
-            raise RuntimeError(
-                f"{name}: base commit changed; update provenance explicitly"
-            )
+            raise RuntimeError(f"{name}: base commit changed; update provenance explicitly")
         files = subprocess.check_output(
             ["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=repo
         )
@@ -34,9 +30,7 @@ def main():
                 cwd=repo,
                 check=True,
             )
-        patch = subprocess.check_output(
-            ["git", "diff", "--binary", "HEAD", "--"], cwd=repo
-        )
+        patch = subprocess.check_output(["git", "diff", "--binary", "HEAD", "--"], cwd=repo)
         (destination / f"{name}.patch").write_bytes(patch)
         with tempfile.TemporaryDirectory(prefix="sre-patch-check-") as temporary:
             env = {**os.environ, "GIT_INDEX_FILE": str(Path(temporary) / "index")}

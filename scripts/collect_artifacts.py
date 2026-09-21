@@ -1,8 +1,8 @@
 """Download run evidence only; omit credentials, image archives and build contexts."""
 
-from pathlib import Path, PurePosixPath
 import re
 import stat
+from pathlib import Path, PurePosixPath
 
 from remote import ROOT, connect
 
@@ -14,9 +14,7 @@ def main():
     if key_file.exists():
         secrets.extend(
             x.encode()
-            for x in re.findall(
-                r"sk-[A-Za-z0-9_-]+", key_file.read_text(encoding="utf-8-sig")
-            )
+            for x in re.findall(r"sk-[A-Za-z0-9_-]+", key_file.read_text(encoding="utf-8-sig"))
         )
     count = 0
     try:
@@ -28,9 +26,7 @@ def main():
                 nonlocal count
                 data = sftp.open(str(remote), "rb").read()
                 if any(secret in data for secret in secrets):
-                    raise RuntimeError(
-                        f"Credential detected; refusing local copy: {remote.name}"
-                    )
+                    raise RuntimeError(f"Credential detected; refusing local copy: {remote.name}")
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(data)
                 count += 1
@@ -50,9 +46,7 @@ def main():
                     ".xml",
                     ".txt",
                 }:
-                    download(
-                        base / "artifacts" / entry.filename, local / entry.filename
-                    )
+                    download(base / "artifacts" / entry.filename, local / entry.filename)
             tree(base / "repos/sregym/results", local / "results")
             try:
                 sftp.stat(str(base / "artifacts/trace-export"))

@@ -15,9 +15,9 @@ deadline = time.monotonic() + 1800
 seen = set()
 last_work = time.monotonic()
 while time.monotonic() < deadline:
-    pods = json.loads(
-        subprocess.check_output(["kubectl", "get", "pods", "-A", "-o", "json"])
-    )["items"]
+    pods = json.loads(subprocess.check_output(["kubectl", "get", "pods", "-A", "-o", "json"]))[
+        "items"
+    ]
     images = set()
     for pod in pods:
         for key in ("containerStatuses", "initContainerStatuses"):

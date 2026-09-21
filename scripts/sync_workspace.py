@@ -1,8 +1,8 @@
 """Upload only local upstream changes and project scripts/configs, never credentials."""
 
-from pathlib import Path, PurePosixPath
 import io
 import subprocess
+from pathlib import Path, PurePosixPath
 
 from remote import ROOT, connect
 
@@ -62,9 +62,9 @@ def main():
                                 ],
                                 capture_output=True,
                             ).stdout
-                            if original.count(b"\n") and original.count(
-                                b"\r\n"
-                            ) == original.count(b"\n"):
+                            if original.count(b"\n") and original.count(b"\r\n") == original.count(
+                                b"\n"
+                            ):
                                 content = content.replace(b"\n", b"\r\n")
                 except UnicodeDecodeError:
                     pass

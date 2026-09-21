@@ -19,14 +19,12 @@ def main():
     ]
 
     def get(resource):
-        return json.loads(
-            subprocess.check_output([*kubectl, "get", resource, "-A", "-o", "json"])
-        )["items"]
+        return json.loads(subprocess.check_output([*kubectl, "get", resource, "-A", "-o", "json"]))[
+            "items"
+        ]
 
     assert (
-        subprocess.check_output(
-            [*kubectl, "config", "current-context"], text=True
-        ).strip()
+        subprocess.check_output([*kubectl, "config", "current-context"], text=True).strip()
         == "kind-sre-agent-dev"
     )
     pods = get("pods")
@@ -35,12 +33,9 @@ def main():
         "after_reset": args.after_reset,
         "namespaces": [n["metadata"]["name"] for n in get("namespaces")],
         "networkpolicies": [
-            p["metadata"]["namespace"] + "/" + p["metadata"]["name"]
-            for p in get("networkpolicies")
+            p["metadata"]["namespace"] + "/" + p["metadata"]["name"] for p in get("networkpolicies")
         ],
-        "helm": json.loads(
-            subprocess.check_output(["helm", "list", "-A", "-o", "json"])
-        ),
+        "helm": json.loads(subprocess.check_output(["helm", "list", "-A", "-o", "json"])),
         "pods": [
             {
                 "namespace": p["metadata"]["namespace"],
@@ -48,10 +43,7 @@ def main():
                 "uid": p["metadata"]["uid"],
                 "node": p["spec"].get("nodeName"),
                 "images": [
-                    {
-                        k: s.get(k)
-                        for k in ("name", "image", "imageID", "ready", "restartCount")
-                    }
+                    {k: s.get(k) for k in ("name", "image", "imageID", "ready", "restartCount")}
                     for s in p.get("status", {}).get("containerStatuses", [])
                 ],
             }
@@ -76,9 +68,9 @@ def main():
         }, "Workload namespaces remain"
         assert not data["networkpolicies"], "NetworkPolicy remains"
         assert "fw-coexistence" in data["docker_containers"] and data["k3s"] == "active"
-        assert all(
-            p["images"] and all(i["ready"] for i in p["images"]) for p in data["pods"]
-        ), "Pods not ready"
+        assert all(p["images"] and all(i["ready"] for i in p["images"]) for p in data["pods"]), (
+            "Pods not ready"
+        )
     name = "runtime-after-reset.json" if args.after_reset else "runtime-deployed.json"
     (root / "artifacts" / name).write_text(json.dumps(data, indent=2) + "\n")
     with (root / "artifacts/mcp-server.log").open("w") as handle:

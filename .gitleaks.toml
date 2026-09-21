@@ -1,0 +1,8 @@
+title = "SRE project secrets"
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Exact synthetic credential in the trace-redaction regression test"
+regexTarget = "match"
+regexes = ['''sk-1234567890abcdef1234567890abcdef''']

@@ -1,0 +1,51 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: Ruff (project code)
+        entry: uv run --frozen ruff check scripts tests
+        language: system
+        pass_filenames: false
+        types: [python]
+      - id: ruff-format
+        name: Ruff format check (project code)
+        entry: uv run --frozen ruff format --check scripts tests
+        language: system
+        pass_filenames: false
+        types: [python]
+      - id: config-check
+        name: Parse configuration
+        entry: uv run --frozen python scripts/check_config.py
+        language: system
+        pass_filenames: false
+        files: '(\.json|\.ya?ml|\.toml)$'
+      - id: patch-integrity
+        name: Patch checksums and optional local source comparison
+        entry: uv run --frozen python scripts/local_patch_check.py
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: large-files
+        name: Reject staged files larger than 1 MiB
+        entry: uv run --frozen python scripts/check_large_files.py
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: shellcheck
+        name: ShellCheck
+        entry: uv run --frozen python scripts/quality_tools.py shellcheck
+        language: system
+        pass_filenames: false
+        types: [shell]
+      - id: actionlint
+        name: actionlint
+        entry: uv run --frozen python scripts/quality_tools.py actionlint
+        language: system
+        pass_filenames: false
+        files: '^\.github/workflows/.*\.ya?ml$'
+      - id: gitleaks
+        name: Gitleaks (tracked project source and patches)
+        entry: uv run --frozen python scripts/quality_tools.py gitleaks
+        language: system
+        pass_filenames: false
+        always_run: true

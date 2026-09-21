@@ -1,8 +1,8 @@
 """Build one local image with isolated Holmes dependencies and current drivers."""
 
-from pathlib import Path
 import subprocess
 import tarfile
+from pathlib import Path
 
 root = Path.home() / "sre-agent-project"
 build = root / "artifacts/agent-build"
