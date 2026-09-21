@@ -44,3 +44,7 @@ campaign 是上游 runner 外的一层有限实验编排，复用原有部署、
 第 10 条 `baseline / wrong_service_selector_social_network / repeat 1` 的前两次上游部署分别在约 1011 秒和 1008 秒后因 Pod 未全部 Ready 失败，均未进入 Agent 调查。第二次失败后的 namespace 清理被一个超过删除宽限期、无资源 finalizer 的 `nginx-thrift-675d8d8c5d-8t5qz` Pod 阻塞；确认它的 init container 已结束、主容器从未启动且本次 setup 已判失败后，仅对该精确 Pod 执行 `--grace-period=0 --force`，随后原生 reconcile 完成并开始第三次部署。第三次部署约 146 秒完成，Agent 正常调查并获得官方 1.0，最终 cleanup、judge 和数据验收均通过。前两次 setup 失败和强制清理保留为环境生命周期证据，不计作额外 Agent attempt，也不把第三次结果归因于 Harness 改动。
 
 截至本次快照，开发矩阵已有 11 条有效完成、1 条运行中，replacement 为 0。第 11 条 `review / network_policy_block / repeat 3` 正常完成注入、提交、评分、清理和数据验收，但官方 composite 为 0；最终答案错误地判断没有活动故障并聚焦 MongoDB 权限撤销脚本，仍未识别 `deny-all-recommendation`。该次 review 在 iteration 16 触发，输入 token 988,445，继续显示明显成本而未带来诊断成功。冻结验证尚未开始，当前结果不能作为最终保留或回退结论。
+
+开发对照随后完成 24/24 条有效 attempt，replacement 为 0，所有完成项均通过 judge、data 和 cleanup 验收。按预定排序，`combined` 被选为冻结候选：baseline 与 combined 均为 3/6 官方成功，composite 均值分别为 0.500 与 0.593；combined 的可捕获 Agent token 合计约 5.81M，高于 baseline 的约 2.89M。NetworkPolicy 在四种配置中都没有官方成功，部分运行取得了 0.56、0.67 等局部 composite，但没有完成正确根因确认。候选选择只表示本开发矩阵中的观察排序，不宣称稳定提分或泛化收益。
+
+开发选择完成后，validation workflow `35602219102` 从 `main` 的 frozen commit `f86969a784f939a2a75f1eb42aa8514a81ff2108` 启动，读取同一 campaign state 中的 `combined` 候选，计划运行 `namespace_memory_limit` 与 `readiness_probe_misconfiguration_social_network` 两个冻结验证案例，baseline 和 combined 各 3 次。验证阶段不再根据中间结果调参；镜像、模型、预算和工具权限保持不变。
