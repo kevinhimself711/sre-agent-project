@@ -1,7 +1,9 @@
 """Build one local image with isolated Holmes dependencies and current drivers."""
 
+import json
 import os
 import subprocess
+import sys
 import tarfile
 
 from project_paths import project_root
@@ -9,6 +11,18 @@ from project_paths import project_root
 root = project_root()
 revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
 image_name = os.environ.get("SRE_AGENT_IMAGE", "sre-holmes-agent:baseline")
+# Once measurements exist, rebuilding would change the frozen runtime identity.
+states = list((root / "artifacts/campaigns").glob("*/state.json"))
+if states:
+    image_id = subprocess.check_output(
+        ["docker", "image", "inspect", image_name, "--format", "{{.Id}}"], text=True
+    ).strip()
+    for state_path in states:
+        provenance = json.loads(state_path.read_text())["provenance"]
+        if provenance["commit"] != revision or provenance["image_id"] != image_id:
+            raise RuntimeError("Frozen campaign image or source changed; refusing to rebuild")
+    print(f"Reusing frozen agent image {image_id}")
+    sys.exit(0)
 build = root / "artifacts/agent-build"
 build.mkdir(exist_ok=True)
 with tarfile.open(build / "holmes-runtime.tar", "w") as archive:
