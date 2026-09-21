@@ -4,9 +4,10 @@ import json
 import subprocess
 import sys
 import time
-from pathlib import Path
 
-root = Path.home() / "sre-agent-project"
+from project_paths import project_root
+
+root = project_root()
 assert (
     subprocess.check_output(["kubectl", "config", "current-context"], text=True).strip()
     == "kind-sre-agent-dev"

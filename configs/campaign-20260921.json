@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "campaign_id": "diagnosis-20260921",
+  "seed": 20260921,
+  "repetitions": 3,
+  "max_replacements": 4,
+  "variants": ["baseline", "review", "recovery", "combined"],
+  "agent_model": "openai/qwen3.8-max",
+  "judge_model": "openai/qwen3.8-max",
+  "max_steps": 30,
+  "max_output_tokens": 8192,
+  "agent_timeout": 1800,
+  "profile": "full",
+  "stage": "diagnosis",
+  "enable_thinking": false,
+  "cases": {
+    "dev": [
+      {"id": "network_policy_block", "family": "network_policy", "namespace": "hotel-reservation"},
+      {"id": "wrong_service_selector_social_network", "family": "service_selector", "namespace": "social-network"}
+    ],
+    "validation": [
+      {"id": "namespace_memory_limit", "family": "namespace_memory_limit", "namespace": "hotel-reservation"},
+      {"id": "readiness_probe_misconfiguration_social_network", "family": "readiness_probe", "namespace": "social-network"}
+    ]
+  }
+}

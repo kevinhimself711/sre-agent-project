@@ -1,10 +1,10 @@
 {
   "holmesgpt": {
     "base_commit": "3bd44edf04f9587c778ee8e9b244965190c40fdf",
-    "patch_sha256": "88e58c134a8b84df0fe2efd45afd4dc438c78f4d87f18d8c2a99f7ddbbca70a5"
+    "patch_sha256": "cbb0ceebb2c04a89e273f6db2a0b47c088fee10440bed32b6ee79a18ac839533"
   },
   "sregym": {
     "base_commit": "46c853db3a79332ea1c0ada076d888cec7a02f7e",
-    "patch_sha256": "a0f39ed08e54a369d4aac9e8cb18a692c1434d75012263f7d998b4045c5c7bdf"
+    "patch_sha256": "4a5d845121de6a4c8df20de2e03fd442fb42a1900bf63f313a432f0c0847cbf1"
   }
 }

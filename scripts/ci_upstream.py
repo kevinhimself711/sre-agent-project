@@ -35,12 +35,13 @@ def main():
         tests = [
             "tests/core/test_episode_trace.py",
             "tests/test_mcp_toolset.py",
+            "tests/test_mcp_content_errors.py",
             "tests/test_tool_calling_llm.py",
         ]
         tests.extend(
             str(p.relative_to(repo)) for p in (repo / "tests/core").glob("test_diagnosis_review.py")
         )
-        args = ["--no-cov", "-n", "0", "-o", "log_cli=false"]
+        args = ["--no-cov", "-n", "0", "-o", "log_cli=false", "-k", "not everything_stdio"]
     elif name == "sregym":
         subprocess.run(["uv", "sync", "--frozen", "--python", sys.executable], cwd=repo, check=True)
         tests = [

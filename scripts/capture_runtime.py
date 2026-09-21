@@ -4,14 +4,15 @@ import argparse
 import json
 import subprocess
 from datetime import datetime, timezone
-from pathlib import Path
+
+from project_paths import project_root
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--after-reset", action="store_true")
     args = parser.parse_args()
-    root = Path.home() / "sre-agent-project"
+    root = project_root()
     kubectl = [
         str(root / "bin/kubectl"),
         "--kubeconfig",

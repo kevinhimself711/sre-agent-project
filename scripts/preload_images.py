@@ -4,7 +4,8 @@ import argparse
 import concurrent.futures
 import hashlib
 import subprocess
-from pathlib import Path
+
+from project_paths import project_root
 
 
 def main():
@@ -12,7 +13,7 @@ def main():
     parser.add_argument("images", nargs="+")
     parser.add_argument("--destination", choices=["kind", "host"], default="kind")
     args = parser.parse_args()
-    root = Path.home() / "sre-agent-project"
+    root = project_root()
     cache = root / "artifacts/images"
     cache.mkdir(parents=True, exist_ok=True)
 

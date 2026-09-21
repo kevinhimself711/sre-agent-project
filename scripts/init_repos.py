@@ -16,6 +16,7 @@ def main():
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument("--only", choices=("holmesgpt", "sregym"))
     parser.add_argument("--skip-applications", action="store_true")
+    parser.add_argument("--cache", type=Path)
     args = parser.parse_args()
     from verify_patches import verify
 
@@ -28,7 +29,8 @@ def main():
         repo = repos / name
         if repo.exists():
             raise RuntimeError(f"{repo} already exists; leave the existing checkout untouched")
-        git(ROOT, "clone", info["url"], str(repo))
+        source = str(args.cache / name) if args.cache else info["url"]
+        git(ROOT, "clone", source, str(repo))
         git(repo, "checkout", "-b", info["branch"], info["commit"])
         git(repo, "apply", "--check", str(ROOT / "patches" / f"{name}.patch"))
         git(repo, "apply", str(ROOT / "patches" / f"{name}.patch"))

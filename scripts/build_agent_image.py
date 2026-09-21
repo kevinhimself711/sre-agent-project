@@ -1,10 +1,14 @@
 """Build one local image with isolated Holmes dependencies and current drivers."""
 
+import os
 import subprocess
 import tarfile
-from pathlib import Path
 
-root = Path.home() / "sre-agent-project"
+from project_paths import project_root
+
+root = project_root()
+revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+image_name = os.environ.get("SRE_AGENT_IMAGE", "sre-holmes-agent:baseline")
 build = root / "artifacts/agent-build"
 build.mkdir(exist_ok=True)
 with tarfile.open(build / "holmes-runtime.tar", "w") as archive:
@@ -32,11 +36,11 @@ ENV PYTHONPATH=/opt/holmes:/opt/sregym
 ENV LITELLM_LOCAL_MODEL_COST_MAP=True
 ENV OVERRIDE_MAX_OUTPUT_TOKEN=8192
 ENV LLM_REQUEST_TIMEOUT=120
-ENV HOLMES_SOURCE_REV=3bd44edf04f9587c778ee8e9b244965190c40fdf+local
+ENV HOLMES_SOURCE_REV=__PROJECT_REVISION__
 RUN /opt/holmes/.venv/bin/python -c "from holmes.config import Config; from clients.holmes.driver import create_config"
-"""
+""".replace("__PROJECT_REVISION__", revision)
 )
 subprocess.run(
-    ["docker", "build", "--pull=false", "-t", "sre-holmes-agent:baseline", str(build)],
+    ["docker", "build", "--pull=false", "-t", image_name, str(build)],
     check=True,
 )

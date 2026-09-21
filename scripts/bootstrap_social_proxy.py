@@ -13,13 +13,14 @@ import socketserver
 import subprocess
 import threading
 import time
-from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import urlopen
 
+from project_paths import project_root
+
 
 def main():
-    root = Path.home() / "sre-agent-project"
+    root = project_root()
     k = [str(root / "bin/kubectl"), "--kubeconfig", str(root / "configs/kubeconfig")]
     assert (
         subprocess.check_output([*k, "config", "current-context"], text=True).strip()

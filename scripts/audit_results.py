@@ -6,14 +6,14 @@ import csv
 import hashlib
 import json
 from collections import Counter
-from pathlib import Path
 
 from llm_backend.usage_log import summarize_usage
+from project_paths import project_root
 from sregym.traces import store
 from sregym.traces.holmes_export import export_run
 from sregym.traces.postprocess import write_trajectory
 
-ROOT = Path.home() / "sre-agent-project"
+ROOT = project_root()
 
 
 def decode(value):

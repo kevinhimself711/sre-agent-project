@@ -1,9 +1,10 @@
 """Repair transport-only CRLF differences without reverting semantic changes."""
 
 import subprocess
-from pathlib import Path
 
-root = Path.home() / "sre-agent-project"
+from project_paths import project_root
+
+root = project_root()
 for name in ("holmesgpt", "sregym"):
     repo = root / "repos" / name
     files = subprocess.check_output(

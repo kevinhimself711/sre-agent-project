@@ -1,9 +1,37 @@
+diff --git a/holmes/core/diagnosis_review.py b/holmes/core/diagnosis_review.py
+new file mode 100644
+index 00000000..052479d2
+--- /dev/null
++++ b/holmes/core/diagnosis_review.py
+@@ -0,0 +1,22 @@
++"""A bounded, opt-in check of evidence before accepting a diagnosis."""
++
++REVIEW_PROMPT = (
++    "Before submitting this draft, review the evidence once. "
++    "Check whether the reported symptom is still present and whether the timestamps "
++    "support the proposed cause rather than a recovered startup error. "
++    "Identify an observation that could contradict your leading explanation; use the "
++    "available read-only tools to check a material gap if the remaining budget allows. "
++    "Do not invent evidence or assume that all errors are relevant. "
++    "Then provide your final diagnosis, distinguishing verified facts from uncertainty. "
++    "You may keep the draft's conclusion if it is supported."
++)
++
++
++def review_decision(finish_reason, content, iteration, max_steps):
++    if finish_reason != "stop":
++        return "non_stop_finish"
++    if not isinstance(content, str) or not content.strip():
++        return "empty_answer"
++    if iteration >= max_steps:
++        return "budget_exhausted"
++    return "triggered"
 diff --git a/holmes/core/episode_trace.py b/holmes/core/episode_trace.py
 new file mode 100644
-index 00000000..71bee089
+index 00000000..0b0b7bce
 --- /dev/null
 +++ b/holmes/core/episode_trace.py
-@@ -0,0 +1,125 @@
+@@ -0,0 +1,132 @@
 +"""Opt-in, local JSONL capture at the effective model/tool boundaries.
 +
 +Disabled unless HOLMES_EPISODE_TRACE is set. No credentials or headers are
@@ -19,10 +47,16 @@ index 00000000..71bee089
 +import threading
 +import time
 +import uuid
++from contextvars import ContextVar
 +from datetime import datetime, timezone
 +from pathlib import Path
 +
 +_lock = threading.Lock()
++_last_request_id = ContextVar("holmes_last_request_id", default=None)
++
++
++def last_request_id():
++    return _last_request_id.get()
 +
 +
 +def _json_default(value):
@@ -62,6 +96,7 @@ index 00000000..71bee089
 +    if not os.environ.get("HOLMES_EPISODE_TRACE"):
 +        return completion(**kwargs)
 +    request_id = uuid.uuid4().hex
++    _last_request_id.set(request_id)
 +    purpose = "investigation"
 +    frame = inspect.currentframe()
 +    try:
@@ -146,10 +181,33 @@ index 314e6cd5..c7d01cbd 100644
              api_key=self.api_key,
              base_url=self.api_base,
 diff --git a/holmes/core/tool_calling_llm.py b/holmes/core/tool_calling_llm.py
-index 8dedf115..fbc4e83e 100644
+index 8dedf115..c9af2684 100644
 --- a/holmes/core/tool_calling_llm.py
 +++ b/holmes/core/tool_calling_llm.py
-@@ -924,6 +924,9 @@ class ToolCallingLLM:
+@@ -215,12 +215,14 @@ class ToolCallingLLM:
+         llm: LLM,
+         tool_results_dir: Optional[Path],
+         tracer=None,
++        diagnosis_review: bool = False,
+     ):
+         self.tool_executor = tool_executor
+         self.max_steps = max_steps
+         self.tracer = tracer
+         self.llm = llm
+         self.tool_results_dir = tool_results_dir
++        self.diagnosis_review = diagnosis_review
+ 
+     def with_executor(self, tool_executor: ToolExecutor) -> "ToolCallingLLM":
+         """Return a shallow copy with a different ToolExecutor.
+@@ -234,6 +236,7 @@ class ToolCallingLLM:
+             llm=self.llm,
+             tool_results_dir=self.tool_results_dir,
+             tracer=self.tracer,
++            diagnosis_review=self.diagnosis_review,
+         )
+         return clone
+ 
+@@ -924,6 +927,9 @@ class ToolCallingLLM:
          # Extract tool name early for span naming
          tool_name_for_span = getattr(getattr(tool_to_call, "function", None), "name", "unknown_tool")
          _tool_start = time.time()
@@ -159,7 +217,7 @@ index 8dedf115..fbc4e83e 100644
          with trace_span.start_span(name=f"holmesgpt.tool.{tool_name_for_span}", type="tool") as tool_span:
              # ChatCompletionMessageToolCall is a union of FunctionToolCall (has 'function')
              # and CustomToolCall (has 'custom'). We only support function tool calls.
-@@ -942,6 +945,8 @@ class ToolCallingLLM:
+@@ -942,6 +948,8 @@ class ToolCallingLLM:
                  ToolCallingLLM._log_tool_call_result(
                      tool_span, tool_call_result, enable_tool_approval
                  )
@@ -168,7 +226,7 @@ index 8dedf115..fbc4e83e 100644
                  return tool_call_result
  
              tool_name = tool_to_call.function.name
-@@ -996,6 +1001,9 @@ class ToolCallingLLM:
+@@ -996,6 +1004,9 @@ class ToolCallingLLM:
                  toolset_name=toolset_name if isinstance(toolset_name, str) else None,
              )
  
@@ -178,6 +236,195 @@ index 8dedf115..fbc4e83e 100644
              # Save image count before spill_oversized_tool_result clears them
              image_count = (
                  len(tool_call_result.result.images)
+@@ -1150,9 +1161,13 @@ class ToolCallingLLM:
+         if iteration_offset < 0:
+             raise ValueError("iteration_offset must be non-negative")
+         i = iteration_offset
++        review_used = False
+ 
+         while i < max_steps:
+             if cancel_event and cancel_event.is_set():
++                if self.diagnosis_review:
++                    from holmes.core.episode_trace import trace_event
++                    trace_event("diagnosis_review", state="skipped", reason="cancelled")
+                 raise LLMInterruptedError()
+ 
+             i += 1
+@@ -1294,6 +1309,9 @@ class ToolCallingLLM:
+                     )
+                     raise
+               except Exception as e:
++                if self.diagnosis_review:
++                    from holmes.core.episode_trace import trace_event
++                    trace_event("diagnosis_review", state="skipped", reason="model_error")
+                 logging.error(
+                     f"LLM call failed on model={self.llm.model} (streaming iteration {i}): "
+                     f"{type(e).__name__}: {e}",
+@@ -1318,6 +1336,22 @@ class ToolCallingLLM:
+ 
+             tools_to_call = getattr(response_message, "tool_calls", None)
+             if not tools_to_call:
++                if self.diagnosis_review and not review_used:
++                    from holmes.core.diagnosis_review import REVIEW_PROMPT, review_decision
++                    from holmes.core.episode_trace import last_request_id, trace_event
++
++                    reason = review_decision(
++                        getattr(full_response.choices[0], "finish_reason", None),
++                        response_message.content, i, max_steps,
++                    )
++                    trace_event(
++                        "diagnosis_review", state=reason, draft_request_id=last_request_id(),
++                        draft=response_message.content, iteration=i, remaining_steps=max_steps - i,
++                    )
++                    review_used = True
++                    if reason == "triggered":
++                        messages.append({"role": "user", "content": REVIEW_PROMPT})
++                        continue
+                 # Capture the final iteration's finish_reason for usage tracking
+                 # (HolmesUsageEvents.finish_reason). Earlier iterations always end
+                 # with 'tool_calls'; this last one tells us why the loop terminated
+diff --git a/holmes/plugins/toolsets/mcp/toolset_mcp.py b/holmes/plugins/toolsets/mcp/toolset_mcp.py
+index 322b5a4c..f8419732 100644
+--- a/holmes/plugins/toolsets/mcp/toolset_mcp.py
++++ b/holmes/plugins/toolsets/mcp/toolset_mcp.py
+@@ -139,9 +139,17 @@ DEFAULT_HEALTH_CHECK_TOOLS: List[str] = [
+ 
+ 
+ 
++class ContentErrorRule(BaseModel):
++    prefix: str = Field(min_length=1)
++    contains: Optional[str] = None
++    category: str
++    recovery_hint: str
++
++
+ class MCPConfig(ToolsetConfig):
+     _name: ClassVar[Optional[str]] = "HTTP/SSE"
+     _description: ClassVar[Optional[str]] = "Connect via HTTP using SSE or Streamable HTTP transport"
++    content_error_rules: List[ContentErrorRule] = Field(default_factory=list)
+ 
+     mode: MCPMode = Field(
+         default=MCPMode.SSE,
+@@ -660,7 +668,18 @@ class RemoteMCPTool(Tool):
+                 invocation=f"MCPtool {self.name} with params {params}",
+             )
+ 
+-        is_error = tool_result.isError or self._is_content_error(merged_text)
++        matched_rule = next(
++            (
++                rule for rule in getattr(self.toolset._mcp_config, "content_error_rules", [])
++                if merged_text.lstrip().startswith(rule.prefix)
++                and (rule.contains is None or rule.contains.lower() in merged_text.lower())
++            ),
++            None,
++        )
++        is_error = tool_result.isError or self._is_content_error(merged_text) or matched_rule is not None
++        recovery_error = None
++        if matched_rule is not None:
++            recovery_error = f"{matched_rule.category}: {matched_rule.recovery_hint}"
+ 
+         images = None
+         if not is_error:
+@@ -677,6 +696,7 @@ class RemoteMCPTool(Tool):
+                 else StructuredToolResultStatus.SUCCESS
+             ),
+             data=self._merge_result_payload(merged_text, tool_result.structuredContent),
++            error=recovery_error,
+             images=images,
+             params=params,
+             invocation=f"MCPtool {self.name} with params {params}",
+diff --git a/tests/core/test_diagnosis_review.py b/tests/core/test_diagnosis_review.py
+new file mode 100644
+index 00000000..664b1a9b
+--- /dev/null
++++ b/tests/core/test_diagnosis_review.py
+@@ -0,0 +1,86 @@
++import json
++import threading
++from unittest.mock import patch
++
++import pytest
++
++from holmes.core.diagnosis_review import REVIEW_PROMPT
++from holmes.core.tool_calling_llm import LLMInterruptedError
++from tests.test_tool_calling_llm import (
++    LIMIT_PATCH,
++    _make_context_limiter_passthrough,
++    _make_llm_response,
++    _make_mock_tool_call,
++    _make_tool_call_result,
++    make_ai,
++    mock_llm,
++    mock_tool_executor,
++)
++
++
++def response(text="diagnosis", finish="stop", tools=None):
++    value = _make_llm_response(content=text, tool_calls=tools)
++    value.choices[0].finish_reason = finish
++    return value
++
++
++@pytest.mark.parametrize("enabled,calls", [(False, 1), (True, 2)])
++@patch(LIMIT_PATCH, side_effect=_make_context_limiter_passthrough)
++def test_review_is_opt_in_and_once(_limit, make_ai, mock_llm, enabled, calls):
++    ai = make_ai()
++    ai.diagnosis_review = enabled
++    mock_llm.completion.side_effect = [response("draft"), response("verified")]
++    result = ai.call([{"role": "user", "content": "diagnose"}])
++    assert result.num_llm_calls == calls
++    assert result.result == ("verified" if enabled else "draft")
++    if enabled:
++        messages = mock_llm.completion.call_args.kwargs["messages"]
++        assert sum(m.get("content") == REVIEW_PROMPT for m in messages) == 1
++        assert {"role": "assistant", "content": "draft"} in messages
++
++
++@pytest.mark.parametrize("steps,finish", [(1, "stop"), (3, "length"), (3, "content_filter")])
++@patch(LIMIT_PATCH, side_effect=_make_context_limiter_passthrough)
++def test_review_respects_finish_and_budget(_limit, make_ai, mock_llm, steps, finish):
++    ai = make_ai(max_steps=steps)
++    ai.diagnosis_review = True
++    mock_llm.completion.return_value = response(finish=finish)
++    result = ai.call([{"role": "user", "content": "diagnose"}])
++    assert result.num_llm_calls == 1
++
++
++@patch(LIMIT_PATCH, side_effect=_make_context_limiter_passthrough)
++def test_review_can_investigate_and_uses_same_budget(_limit, make_ai, mock_llm):
++    ai = make_ai(max_steps=3)
++    ai.diagnosis_review = True
++    mock_llm.completion.side_effect = [response("draft"), response(tools=[_make_mock_tool_call()]), response("corrected")]
++    ai._invoke_llm_tool_call = lambda *a, **kw: _make_tool_call_result()
++    result = ai.call([{"role": "user", "content": "diagnose"}])
++    assert result.num_llm_calls == 3
++    assert result.result == "corrected"
++    assert mock_llm.completion.call_args.kwargs["tools"] is None
++
++
++@patch(LIMIT_PATCH, side_effect=_make_context_limiter_passthrough)
++def test_review_does_not_swallow_model_error(_limit, make_ai, mock_llm, monkeypatch, tmp_path):
++    path = tmp_path / "events.jsonl"
++    monkeypatch.setenv("HOLMES_EPISODE_TRACE", str(path))
++    ai = make_ai()
++    ai.diagnosis_review = True
++    mock_llm.completion.side_effect = TimeoutError("model")
++    with pytest.raises(TimeoutError):
++        ai.call([{"role": "user", "content": "diagnose"}])
++    assert "model_error" in path.read_text()
++
++
++def test_cancelled_loop_does_not_call_model(make_ai, mock_llm, monkeypatch, tmp_path):
++    path = tmp_path / "events.jsonl"
++    monkeypatch.setenv("HOLMES_EPISODE_TRACE", str(path))
++    ai = make_ai()
++    ai.diagnosis_review = True
++    cancel = threading.Event()
++    cancel.set()
++    with pytest.raises(LLMInterruptedError):
++        list(ai.call_stream(msgs=[{"role": "user", "content": "diagnose"}], cancel_event=cancel))
++    mock_llm.completion.assert_not_called()
++    assert json.loads(path.read_text())["reason"] == "cancelled"
 diff --git a/tests/core/test_episode_trace.py b/tests/core/test_episode_trace.py
 new file mode 100644
 index 00000000..b56bbd98
@@ -312,3 +559,48 @@ index 05a3c8ff..2c55b4e4 100644
      if parent_span:
          with parent_span.start_span(
              name="Correctness", type=SpanTypeAttribute.SCORE
+diff --git a/tests/test_mcp_content_errors.py b/tests/test_mcp_content_errors.py
+new file mode 100644
+index 00000000..2e148b3e
+--- /dev/null
++++ b/tests/test_mcp_content_errors.py
+@@ -0,0 +1,39 @@
++from contextlib import asynccontextmanager
++from unittest.mock import AsyncMock
++
++import pytest
++from mcp.types import CallToolResult, TextContent, Tool
++
++from holmes.core.tools import StructuredToolResultStatus
++from holmes.plugins.toolsets.mcp import toolset_mcp
++from holmes.plugins.toolsets.mcp.toolset_mcp import MCPConfig, RemoteMCPTool, RemoteMCPToolset
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("enabled,text,failed", [
++    (False, "Command Rejected: forbidden", False),
++    (True, "Command Rejected: forbidden", True),
++    (True, "Command Rejected (ValueError): Pipe commands are forbidden", True),
++    (True, "Application log: Command Rejected: forbidden", False),
++    (True, "pod1 Running", False),
++])
++async def test_scoped_recovery_preserves_payload(monkeypatch, enabled, text, failed):
++    config = {"url": "http://localhost:1234/sse"}
++    if enabled:
++        config["content_error_rules"] = [{"prefix": "Command Rejected", "category": "rejected", "recovery_hint": "Use allowed queries."}]
++    toolset = RemoteMCPToolset(name="test", description="test", config=config)
++    toolset._mcp_config = MCPConfig(**config)
++    tool = RemoteMCPTool.create(Tool(name="query", inputSchema={"type": "object", "properties": {}}), toolset)
++    session = AsyncMock()
++    session.call_tool.return_value = CallToolResult(content=[TextContent(type="text", text=text)], isError=False)
++
++    @asynccontextmanager
++    async def connected(*args):
++        yield session
++
++    monkeypatch.setattr(toolset_mcp, "get_initialized_mcp_session", connected)
++    result = await tool._invoke_async({}, None)
++    assert result.data == text
++    assert result.status == (StructuredToolResultStatus.ERROR if failed else StructuredToolResultStatus.SUCCESS)
++    assert bool(result.error) == failed
++    session.call_tool.assert_awaited_once()

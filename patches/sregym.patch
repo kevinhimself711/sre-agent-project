@@ -251,10 +251,10 @@ index 0000000..c36b0cb
 +"""HolmesGPT adapter for SREGym diagnosis runs."""
 diff --git a/clients/holmes/driver.py b/clients/holmes/driver.py
 new file mode 100644
-index 0000000..5e31634
+index 0000000..80b4916
 --- /dev/null
 +++ b/clients/holmes/driver.py
-@@ -0,0 +1,210 @@
+@@ -0,0 +1,234 @@
 +"""Use Holmes' native prompt and loop with only the benchmark's MCP tools."""
 +
 +from __future__ import annotations
@@ -268,6 +268,26 @@ index 0000000..5e31634
 +from pathlib import Path
 +
 +import requests
++
++VARIANTS = {"baseline", "review", "recovery", "combined"}
++
++
++def harness_variant():
++    variant = os.environ.get("HOLMES_HARNESS", "baseline")
++    if variant not in VARIANTS:
++        raise ValueError(f"Unknown harness variant: {variant}")
++    return variant
++
++
++def recovery_rules():
++    return [
++        {"prefix": "Command Rejected", "contains": "Pipe commands are forbidden", "category": "pipeline_rejected",
++         "recovery_hint": "Use one allowed kubectl command without shell pipes; use native output, label or field filters where applicable. Do not retry the same rejected command."},
++        {"prefix": "Command Rejected", "contains": "forbidden", "category": "permission_denied",
++         "recovery_hint": "Access was denied. Query individually permitted resource types instead of broad get-all queries; do not request elevated credentials or repeat the denied request."},
++        {"prefix": "Command Rejected", "category": "command_rejected",
++         "recovery_hint": "The command did not execute successfully. Inspect the original rejection and choose an allowed read-only query. Do not treat this as evidence that the application resource is faulty."},
++    ]
 +
 +
 +def wait_for_diagnosis(base: str, session=requests, timeout: float = 300):
@@ -329,6 +349,8 @@ index 0000000..5e31634
 +            for name in ("kubectl", "prometheus", "loki", "jaeger")
 +        }
 +    )
++    if harness_variant() in {"recovery", "combined"}:
++        toolsets["sregym_kubectl"]["config"]["content_error_rules"] = recovery_rules()
 +    return Config(
 +        model=os.environ["AGENT_MODEL_ID"],
 +        api_key=os.environ.get("AGENT_API_KEY"),
@@ -362,6 +384,7 @@ index 0000000..5e31634
 +        tool_results_dir=tool_results_dir,
 +    )
 +    agent.llm.args.update(extra_body={"enable_thinking": False}, max_tokens=8192)
++    agent.diagnosis_review = harness_variant() in {"review", "combined"}
 +    enabled = {ts.name for ts in agent.tool_executor.enabled_toolsets}
 +    if enabled != {"sregym_" + name for name in ("kubectl", "prometheus", "loki", "jaeger")}:
 +        raise RuntimeError(f"Unexpected enabled toolsets: {sorted(enabled)}")
@@ -390,6 +413,7 @@ index 0000000..5e31634
 +        agent_version=os.environ.get("HOLMES_SOURCE_REV", "3bd44edf04f9587c778ee8e9b244965190c40fdf+local"),
 +        model=os.environ["AGENT_MODEL_ID"],
 +        max_steps=int(os.environ.get("HOLMES_MAX_STEPS", "30")),
++        harness_variant=harness_variant(),
 +    )
 +
 +    def record_attachments():
@@ -483,7 +507,7 @@ index 2fa35fd..f4b3eaa 100644
              model_config["max_retries"] = 0
              model_config.setdefault("model_kwargs", {})["num_retries"] = 0
 diff --git a/main.py b/main.py
-index 8e8fdf5..0e853a4 100644
+index 8e8fdf5..6b44114 100644
 --- a/main.py
 +++ b/main.py
 @@ -74,6 +74,7 @@ def run_preflight_check(
@@ -503,6 +527,15 @@ index 8e8fdf5..0e853a4 100644
      if install_script:
          check_cmd = f"/opt/sregym/install-scripts/{install_script} > /dev/null 2>&1 && {check_cmd}"
  
+@@ -238,7 +241,7 @@ def driver_loop(
+     """
+ 
+     async def driver():
+-        base_dir = Path("results") / get_current_datetime_formatted()
++        base_dir = Path(os.environ.get("SREGYM_RESULTS_DIR", str(Path("results") / get_current_datetime_formatted())))
+         base_dir.mkdir(parents=True, exist_ok=True)
+         global _driver_base_dir
+         _driver_base_dir = base_dir
 @@ -914,7 +917,7 @@ def _run_benchmark(args, *, judge_backend: str = "api", agent_image: str | None
                  # Reuse the image already prepared for a subscription judge.
                  force_build=args.force_build and agent_image is None,
@@ -534,10 +567,19 @@ index 5bcf20f..3c44037 100644
  
  # Cluster baseline state snapshot (captured from a fresh cluster)
 diff --git a/sregym/service/container_runner.py b/sregym/service/container_runner.py
-index 410bfa1..ab4f599 100644
+index 410bfa1..98fc4be 100644
 --- a/sregym/service/container_runner.py
 +++ b/sregym/service/container_runner.py
-@@ -250,6 +250,7 @@ class ContainerRunner:
+@@ -234,6 +234,8 @@ class ContainerRunner:
+         "COPILOT_PROVIDER_TYPE",
+         # SREGym internal
+         "AGENT_MODEL_ID",
++        "HOLMES_HARNESS",
++        "HOLMES_MAX_STEPS",
+         "AGENT_REASONING_EFFORT",
+         "AGENT_API_BASE",
+         "AGENT_API_KEY",
+@@ -250,6 +252,7 @@ class ContainerRunner:
          "SESSION_TTL",
          "LLM_QUERY_MAX_RETRIES",
          "LLM_QUERY_INIT_RETRY_DELAY",
@@ -590,10 +632,10 @@ index 2ac417d..fa55b6a 100644
      # convert-level meta (path, application, result-JSON submitted) wins on key
 diff --git a/sregym/traces/holmes_export.py b/sregym/traces/holmes_export.py
 new file mode 100644
-index 0000000..bb9e3c0
+index 0000000..d5c360d
 --- /dev/null
 +++ b/sregym/traces/holmes_export.py
-@@ -0,0 +1,163 @@
+@@ -0,0 +1,169 @@
 +"""Strict host-side acceptance and SFT-format export; official scores stay untouched."""
 +
 +from __future__ import annotations
@@ -608,6 +650,7 @@ index 0000000..bb9e3c0
 +from atif_converter.adapters.holmes import convert_file
 +
 +DEVELOPMENT_CASES = {"network_policy_block", "wrong_service_selector_social_network"}
++VALIDATION_CASES = {"namespace_memory_limit", "readiness_probe_misconfiguration_social_network"}
 +
 +
 +def _decode(value):
@@ -662,12 +705,17 @@ index 0000000..bb9e3c0
 +        issues.append("official_run_incomplete")
 +    if cleanup_failed:
 +        issues.append("cleanup_failed")
-+    positive = diagnosis.get("success") is True and complete and not issues
++    split = "dev" if case in DEVELOPMENT_CASES else "validation" if case in VALIDATION_CASES else "unassigned"
++    positive = diagnosis.get("success") is True and complete and not issues and split == "dev"
 +    samples = []
 +    events = [json.loads(line) for line in raw_path.read_text(encoding="utf-8").splitlines() if line.strip()]
 +    requests = {event["request_id"]: event for event in events if event["event"] == "model_request"}
++    # A pre-review draft is retained as context, never a positive supervision target.
++    drafts = {event.get("draft_request_id") for event in events if event["event"] == "diagnosis_review" and event.get("state") == "triggered"}
 +    for event in events:
 +        if event["event"] != "model_response":
++            continue
++        if event["request_id"] in drafts:
 +            continue
 +        request_event = requests[event["request_id"]]
 +        if request_event.get("purpose") != "investigation":
@@ -697,7 +745,7 @@ index 0000000..bb9e3c0
 +                        "session_id": trajectory.session_id,
 +                        "request_id": event["request_id"],
 +                        "case": case,
-+                        "split": "dev" if case in DEVELOPMENT_CASES else "unassigned",
++                        "split": split,
 +                        "raw_sha256": trajectory.extra["holmes"]["raw_sha256"],
 +                        "teacher": trajectory.agent.model_name,
 +                        "purpose": "format-validation-only",
@@ -717,7 +765,7 @@ index 0000000..bb9e3c0
 +        "composite_score": diagnosis.get("composite_score"),
 +        "issues": issues,
 +        "sft_samples": len(samples),
-+        "split": "dev" if case in DEVELOPMENT_CASES else "unassigned",
++        "split": split,
 +    }
 +    (run_dir / "data-acceptance.json").write_text(
 +        json.dumps(acceptance, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
@@ -759,10 +807,10 @@ index 0000000..bb9e3c0
 +    main()
 diff --git a/tests/traces/test_holmes_adapter.py b/tests/traces/test_holmes_adapter.py
 new file mode 100644
-index 0000000..2804221
+index 0000000..57b5296
 --- /dev/null
 +++ b/tests/traces/test_holmes_adapter.py
-@@ -0,0 +1,199 @@
+@@ -0,0 +1,222 @@
 +import csv
 +import json
 +from unittest.mock import Mock
@@ -962,3 +1010,26 @@ index 0000000..2804221
 +    )
 +    path.write_text("\n".join(json.dumps(e) for e in events))
 +    assert convert_run(run).extra["sregym"]["submitted"] is True
++
++
++@pytest.mark.parametrize("case", ["namespace_memory_limit", "readiness_probe_misconfiguration_social_network", "unknown_case"])
++def test_non_development_cases_never_export_positive_samples(tmp_path, case):
++    run = tmp_path / case / "run_1"
++    run.mkdir(parents=True)
++    write_episode(run)
++    (run / f"{case}_results.csv").write_text("run_status,Diagnosis.success,Diagnosis.composite_score\ncomplete,True,1.0\n")
++    assert export_run(run)["sft_samples"] == 0
++    assert (run / "sft-format-samples.jsonl").read_bytes() == b""
++
++
++def test_reviewed_draft_is_not_a_supervision_target(tmp_path):
++    run = tmp_path / "network_policy_block" / "run_1"
++    run.mkdir(parents=True)
++    path = write_episode(run)
++    events = [json.loads(line) for line in path.read_text().splitlines()]
++    events.insert(-1, {"event": "diagnosis_review", "state": "triggered", "draft_request_id": "b", "timestamp": events[0]["timestamp"]})
++    path.write_text("\n".join(json.dumps(e) for e in events))
++    (run / "network_policy_block_results.csv").write_text("run_status,Diagnosis.success,Diagnosis.composite_score\ncomplete,True,1.0\n")
++    assert export_run(run)["sft_samples"] == 1
++    samples = [json.loads(line) for line in (run / "sft-format-samples.jsonl").read_text().splitlines()]
++    assert all(s["provenance"]["request_id"] != "b" for s in samples)
