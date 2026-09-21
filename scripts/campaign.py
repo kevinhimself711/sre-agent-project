@@ -70,7 +70,10 @@ def completed(record):
     return (
         record.get("execution") in {"complete", "agent_failure"}
         and record.get("cleanup_ok") is True
-        and record.get("judge") == "complete"
+        and (
+            record.get("judge") == "complete"
+            or (record.get("execution") == "agent_failure" and record.get("judge") == "not_run")
+        )
     )
 
 
@@ -166,8 +169,11 @@ def collect_result(directory, job, returncode):
     if isinstance(item["success"], bool):
         item["judge"] = "complete"
         item["execution"] = "complete" if row.get("run_status") == "complete" else "agent_failure"
-    elif decoded("phase.stage:diagnosis.outcome") in {"timeout", "agent_timeout"}:
-        item.update(execution="agent_failure", judge="complete", success=False, score=0.0)
+    elif decoded("incomplete_reason") in {
+        "agent_timeout",
+        "agent_exited_before_all_stages_completed",
+    }:
+        item.update(execution="agent_failure", judge="not_run", success=False, score=0.0)
     else:
         item["execution"] = (
             "judge_failure" if row.get("run_status") == "complete" else "environment_failure"
@@ -204,6 +210,11 @@ def collect_result(directory, job, returncode):
             for e in events
             if e["event"] == "diagnosis_review"
         ]
+    item["artifacts"] = {
+        path.name: {"sha256": digest(path), "bytes": path.stat().st_size}
+        for path in (files[-1], trace, acceptance, run / "sft-format-samples.jsonl")
+        if path.is_file()
+    }
     return item
 
 
@@ -292,7 +303,7 @@ def run_campaign(spec, phase, destination, runner, health, provenance, resume=Fa
         if unfinished.get("execution") == "running":
             # No submission is retried. The old result is reconciled at episode level.
             prior = collect_result(Path(unfinished["artifact_directory"]), unfinished, -1)
-            prior["cleanup_ok"] = True
+            prior["cleanup_ok"] = not prior.get("official_cleanup_failed", False)
             unfinished.update(prior)
             if not completed(unfinished):
                 unfinished["execution"] = "interrupted"
@@ -329,6 +340,7 @@ def run_campaign(spec, phase, destination, runner, health, provenance, resume=Fa
                 record["cleanup_ok"] = not record.get("official_cleanup_failed", False)
             finally:
                 atomic_json(state_path, state)
+                atomic_json(destination / "summary.json", public_summary(state))
             if not record["cleanup_ok"]:
                 raise RuntimeError("Cleanup failed; cluster cannot be reused")
             print(
@@ -371,6 +383,7 @@ def public_summary(state):
         "rejections",
         "repeated_tool_calls",
         "review_events",
+        "artifacts",
     }
     return {
         "schema_version": 1,
@@ -417,16 +430,29 @@ def main():
         ).strip(),
     }
     with cluster_lock():
-        state = run_campaign(
-            spec,
-            args.phase,
-            destination,
-            lambda job, directory: run_one(root, spec, job, directory),
-            health_snapshot,
-            provenance,
-            args.resume,
-        )
-        atomic_json(root / "artifacts/publish/campaign-summary.json", public_summary(state))
+        try:
+            state = run_campaign(
+                spec,
+                args.phase,
+                destination,
+                lambda job, directory: run_one(root, spec, job, directory),
+                health_snapshot,
+                provenance,
+                args.resume,
+            )
+        finally:
+            state_path = destination / "state.json"
+            if state_path.exists():
+                summary = public_summary(json.loads(state_path.read_text()))
+                serialized = json.dumps(summary)
+                for name, value in os.environ.items():
+                    if len(value) >= 8 and any(
+                        term in name for term in ("API_KEY", "PASSWORD", "AUTH_TOKEN")
+                    ):
+                        serialized = serialized.replace(value, "[REDACTED]")
+                atomic_json(
+                    root / "artifacts/publish/campaign-summary.json", json.loads(serialized)
+                )
         if any(not completed(r) for r in selected_records(state, args.phase)):
             raise SystemExit("Campaign ended with missing measurements; see state.json")
 

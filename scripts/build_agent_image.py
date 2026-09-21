@@ -12,7 +12,7 @@ image_name = os.environ.get("SRE_AGENT_IMAGE", "sre-holmes-agent:baseline")
 build = root / "artifacts/agent-build"
 build.mkdir(exist_ok=True)
 with tarfile.open(build / "holmes-runtime.tar", "w") as archive:
-    archive.add(root / "repos/holmesgpt/.venv", arcname=".venv")
+    archive.add((root / "repos/holmesgpt/.venv").resolve(), arcname=".venv")
     archive.add(root / "repos/holmesgpt/holmes", arcname="holmes")
 with tarfile.open(build / "sregym-runtime.tar", "w") as archive:
     for name in (

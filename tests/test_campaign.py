@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 import pytest
-from campaign import completed, load_manifest, run_campaign, schedule
+from campaign import collect_result, completed, load_manifest, run_campaign, schedule
 from cluster_guard import cluster_lock
 from filelock import Timeout
 
@@ -87,6 +87,20 @@ def test_replacements_have_one_campaign_wide_limit(tmp_path):
 
 def test_agent_failure_counts_as_an_observation():
     assert completed({"execution": "agent_failure", "judge": "complete", "cleanup_ok": True})
+    assert completed({"execution": "agent_failure", "judge": "not_run", "cleanup_ok": True})
+
+
+def test_official_timeout_counts_as_failure_without_inventing_judge(tmp_path):
+    job = schedule(SPEC, "dev")[0]
+    run = tmp_path / "holmes" / job["case"] / "run_1"
+    run.mkdir(parents=True)
+    (run / f"{job['case']}_results.csv").write_text(
+        "run_status,incomplete_reason,timed_out\nincomplete,agent_timeout,True\n"
+    )
+    result = collect_result(tmp_path, job, 1)
+    assert result["success"] is False
+    assert result["judge"] == "not_run"
+    assert result["execution"] == "agent_failure"
 
 
 def test_frozen_configuration_cannot_drift(tmp_path):

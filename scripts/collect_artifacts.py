@@ -1,5 +1,6 @@
 """Download run evidence only; omit credentials, image archives and build contexts."""
 
+import argparse
 import re
 import stat
 from pathlib import Path, PurePosixPath
@@ -8,6 +9,11 @@ from remote import ROOT, connect
 
 
 def main():
+    parser = argparse.ArgumentParser(__doc__)
+    parser.add_argument("--remote-root", help="Absolute evaluation workspace on pci-2")
+    parser.add_argument("--output", type=Path, default=ROOT / "artifacts/pci-2")
+    parser.add_argument("--campaign", action="store_true")
+    args = parser.parse_args()
     client, password = connect("pci-2")
     secrets = [password.encode()]
     key_file = ROOT / "Bailian API.txt"
@@ -19,8 +25,12 @@ def main():
     count = 0
     try:
         with client.open_sftp() as sftp:
-            base = PurePosixPath(sftp.normalize(".")) / "sre-agent-project"
-            local = ROOT / "artifacts" / "pci-2"
+            base = (
+                PurePosixPath(args.remote_root)
+                if args.remote_root
+                else PurePosixPath(sftp.normalize(".")) / "sre-agent-project"
+            )
+            local = args.output
 
             def download(remote, target):
                 nonlocal count
@@ -47,6 +57,10 @@ def main():
                     ".txt",
                 }:
                     download(base / "artifacts" / entry.filename, local / entry.filename)
+            if args.campaign:
+                tree(base / "artifacts/campaigns", local / "campaigns")
+                print(f"Downloaded {count} campaign evidence files without known credentials.")
+                return
             tree(base / "repos/sregym/results", local / "results")
             try:
                 sftp.stat(str(base / "artifacts/trace-export"))
