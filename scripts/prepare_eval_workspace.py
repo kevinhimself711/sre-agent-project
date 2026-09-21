@@ -51,11 +51,13 @@ def main():
             subprocess.run(
                 [
                     "git",
+                    "-c",
+                    "protocol.file.allow=always",
+                    "-c",
+                    f"submodule.SREGym-applications.url={old / 'SREGym-applications'}",
                     "submodule",
                     "update",
                     "--init",
-                    "--reference",
-                    str(old / "SREGym-applications"),
                 ],
                 cwd=target,
                 check=True,
