@@ -1,0 +1,23 @@
+/.research/
+/repos/
+/artifacts/
+/cache/
+/configs/kubeconfig
+/Bailian API.txt
+/docs/Computing Resources/*info.txt
+/docs/Computing Resources/
+/docs/Survey/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.ruff_cache/
+.coverage
+coverage.xml
+/test-results/

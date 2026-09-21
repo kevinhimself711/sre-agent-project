@@ -1,0 +1,964 @@
+diff --git a/agents.yaml b/agents.yaml
+index 2fa784d..19a3cff 100644
+--- a/agents.yaml
++++ b/agents.yaml
+@@ -1,4 +1,10 @@
+ agents:
++  - name: holmes
++    kickoff_command: /opt/holmes/.venv/bin/python -m clients.holmes.driver
++    kickoff_workdir: .
++    kickoff_env: null
++    install_script: null
++    agent_version: null
+   - name: stratus
+     kickoff_command: python -m clients.stratus.stratus_agent.driver.driver
+     kickoff_workdir: .
+diff --git a/atif_converter/adapters/holmes.py b/atif_converter/adapters/holmes.py
+new file mode 100644
+index 0000000..6d3c769
+--- /dev/null
++++ b/atif_converter/adapters/holmes.py
+@@ -0,0 +1,181 @@
++"""Convert opt-in Holmes events; preserve effective inputs per inference."""
++
++from __future__ import annotations
++
++import hashlib
++import json
++from pathlib import Path
++
++from ..atif import Agent, FinalMetrics, Metrics, Observation, ObservationResult, Step, ToolCall, Trajectory
++
++
++def convert_file(path: Path | str) -> Trajectory:
++    path = Path(path)
++    raw = path.read_bytes()
++    events = [json.loads(line) for line in raw.decode("utf-8").splitlines() if line.strip()]
++    starts = [e for e in events if e.get("event") == "episode_start"]
++    if len(starts) != 1:
++        raise ValueError("Expected exactly one episode_start")
++    start = starts[0]
++    requests, outcomes, tool_steps, tool_results = {}, set(), {}, set()
++    steps, issues = [], []
++    tools = []
++    final_answer = ""
++    episode_end = None
++    attachments = None
++    for event in events:
++        kind = event["event"]
++        if kind == "model_request":
++            request_id = event["request_id"]
++            if request_id in requests:
++                raise ValueError("Duplicate model request ID")
++            requests[request_id] = event
++            request = event["request"]
++            if not steps:
++                for message in request.get("messages", []):
++                    if message["role"] in ("system", "user"):
++                        steps.append(
++                            Step(
++                                step_id=len(steps) + 1,
++                                source=message["role"],
++                                message=message.get("content") or "",
++                                timestamp=event["timestamp"],
++                            )
++                        )
++                tools = request.get("tools") or []
++        elif kind == "model_response":
++            request_id = event["request_id"]
++            if request_id not in requests or request_id in outcomes:
++                raise ValueError("Missing or duplicate model request/response pairing")
++            outcomes.add(request_id)
++            request = requests[request_id]
++            response = event["response"]
++            choice = response["choices"][0]
++            message = choice["message"]
++            usage = response.get("usage") or {}
++            calls = [
++                ToolCall(
++                    tool_call_id=call["id"],
++                    function_name=call["function"]["name"],
++                    arguments=json.loads(call["function"]["arguments"]),
++                )
++                for call in message.get("tool_calls") or []
++            ]
++            step = Step(
++                step_id=len(steps) + 1,
++                source="agent",
++                message=message.get("content") or "",
++                timestamp=event["timestamp"],
++                model_name=response.get("model") or start["model"],
++                tool_calls=calls or None,
++                llm_call_count=1,
++                metrics=Metrics(
++                    prompt_tokens=usage.get("prompt_tokens"),
++                    completion_tokens=usage.get("completion_tokens"),
++                    cached_tokens=(usage.get("prompt_tokens_details") or {}).get("cached_tokens"),
++                    extra={"elapsed_seconds": event.get("elapsed_seconds")},
++                ),
++                extra={
++                    "request_id": request_id,
++                    "purpose": request.get("purpose", "investigation"),
++                    "effective_request": request["request"],
++                    "finish_reason": choice.get("finish_reason"),
++                },
++            )
++            steps.append(step)
++            for call in calls:
++                if call.tool_call_id in tool_steps:
++                    raise ValueError("Duplicate tool call ID")
++                tool_steps[call.tool_call_id] = step
++        elif kind == "tool_end":
++            result = event["result"]
++            call_id = result["tool_call_id"]
++            if call_id not in tool_steps or call_id in tool_results:
++                raise ValueError("Missing or duplicate tool call/result pairing")
++            tool_results.add(call_id)
++            step = tool_steps[call_id]
++            if step.observation is None:
++                step.observation = Observation(results=[])
++            step.observation.results.append(
++                ObservationResult(
++                    source_call_id=call_id,
++                    content=json.dumps(result["result"], ensure_ascii=False),
++                    extra={"elapsed_seconds": event.get("elapsed_seconds")},
++                )
++            )
++        elif kind in ("model_error", "model_capture_incomplete"):
++            outcomes.add(event["request_id"])
++            issues.append(kind + ":" + event["request_id"])
++        elif kind == "agent_final":
++            final_answer = event.get("answer", "")
++        elif kind == "submission":
++            call_id = "driver-submit"
++            steps.append(
++                Step(
++                    step_id=len(steps) + 1,
++                    source="agent",
++                    message="",
++                    llm_call_count=0,
++                    timestamp=event["timestamp"],
++                    tool_calls=[
++                        ToolCall(
++                            tool_call_id=call_id,
++                            function_name="submit",
++                            arguments={"solution": final_answer, "stage": "diagnosis"},
++                        )
++                    ],
++                    observation=Observation(
++                        results=[
++                            ObservationResult(
++                                source_call_id=call_id,
++                                content=json.dumps(event.get("response") or event, ensure_ascii=False),
++                            )
++                        ]
++                    ),
++                )
++            )
++        elif kind == "episode_end":
++            episode_end = event
++        elif kind == "artifact_manifest":
++            attachments = event.get("attachments", [])
++    for request_id in sorted(requests.keys() - outcomes):
++        issues.append("missing_model_outcome:" + request_id)
++    for call_id in sorted(tool_steps.keys() - tool_results):
++        issues.append("missing_tool_result:" + call_id)
++    if not episode_end:
++        issues.append("missing_episode_end")
++    elif episode_end.get("state") != "finished":
++        issues.append("episode_failed")
++    if attachments is None:
++        issues.append("missing_artifact_manifest")
++    for attachment in attachments or []:
++        target = (path.parent / attachment["path"]).resolve()
++        if not target.is_relative_to(path.parent.resolve()) or not target.is_file():
++            issues.append("missing_or_unsafe_attachment:" + attachment["path"])
++        elif hashlib.sha256(target.read_bytes()).hexdigest() != attachment["sha256"]:
++            issues.append("attachment_hash_mismatch:" + attachment["path"])
++    if not steps:
++        steps = [Step(step_id=1, source="system", message="Episode failed before any captured model request.")]
++    metrics = [step.metrics for step in steps if step.metrics]
++    return Trajectory(
++        session_id=start["session_id"],
++        trajectory_id="holmes:" + start["session_id"],
++        agent=Agent(name="holmes", version=start["agent_version"], model_name=start["model"], tool_definitions=tools),
++        steps=steps,
++        final_metrics=FinalMetrics(
++            total_prompt_tokens=sum(m.prompt_tokens or 0 for m in metrics) if metrics else None,
++            total_completion_tokens=sum(m.completion_tokens or 0 for m in metrics) if metrics else None,
++            total_cached_tokens=sum(m.cached_tokens or 0 for m in metrics) if metrics else None,
++            total_steps=len(steps),
++        ),
++        extra={
++            "holmes": {
++                "raw_sha256": hashlib.sha256(raw).hexdigest(),
++                "raw_file": path.name,
++                "capture_complete": not issues,
++                "capture_issues": issues,
++                "attachments": attachments or [],
++                "episode_state": episode_end.get("state") if episode_end else "interrupted",
++            }
++        },
++    )
+diff --git a/atif_converter/converter.py b/atif_converter/converter.py
+index d4d8212..0652225 100644
+--- a/atif_converter/converter.py
++++ b/atif_converter/converter.py
+@@ -7,7 +7,7 @@ from collections.abc import Sequence
+ from pathlib import Path
+ from typing import Literal, cast
+ 
+-from .adapters import claudecode, codex, copilot, gemini, opencode, stratus
++from .adapters import claudecode, codex, copilot, gemini, holmes, opencode, stratus
+ from .atif import Trajectory
+ from .errors import (
+     AtifConverterError,
+@@ -16,8 +16,9 @@ from .errors import (
+     UnsupportedFormatError,
+ )
+ 
+-AgentName = Literal["claudecode", "codex", "copilot", "gemini", "opencode", "stratus"]
++AgentName = Literal["claudecode", "codex", "copilot", "gemini", "holmes", "opencode", "stratus"]
+ SUPPORTED_AGENTS: tuple[AgentName, ...] = (
++    "holmes",
+     "claudecode",
+     "codex",
+     "copilot",
+@@ -27,6 +28,7 @@ SUPPORTED_AGENTS: tuple[AgentName, ...] = (
+ )
+ 
+ _CONVERTERS = {
++    "holmes": holmes.convert_file,
+     "claudecode": claudecode.convert_file,
+     "codex": codex.convert_file,
+     "copilot": copilot.convert_file,
+@@ -205,6 +207,9 @@ def detect_agent(session_file: Path | str) -> AgentName:
+     path = _require_file(session_file)
+     root, records = _load_detection_records(path)
+ 
++    if any(r.get("event") == "episode_start" and r.get("agent") == "holmes" for r in records):
++        return "holmes"
++
+     if _looks_like_opencode(root):
+         return "opencode"
+     if _looks_like_gemini(root, records):
+diff --git a/clients/holmes/__init__.py b/clients/holmes/__init__.py
+new file mode 100644
+index 0000000..c36b0cb
+--- /dev/null
++++ b/clients/holmes/__init__.py
+@@ -0,0 +1 @@
++"""HolmesGPT adapter for SREGym diagnosis runs."""
+diff --git a/clients/holmes/driver.py b/clients/holmes/driver.py
+new file mode 100644
+index 0000000..5e31634
+--- /dev/null
++++ b/clients/holmes/driver.py
+@@ -0,0 +1,210 @@
++"""Use Holmes' native prompt and loop with only the benchmark's MCP tools."""
++
++from __future__ import annotations
++
++import argparse
++import hashlib
++import json
++import os
++import time
++import uuid
++from pathlib import Path
++
++import requests
++
++
++def wait_for_diagnosis(base: str, session=requests, timeout: float = 300):
++    deadline = time.monotonic() + timeout
++    while time.monotonic() < deadline:
++        response = session.get(base + "/status", timeout=10)
++        response.raise_for_status()
++        stage = response.json()["stage"]
++        if stage == "diagnosis":
++            return
++        if stage in ("mitigation", "done", "tearing_down"):
++            raise RuntimeError(f"Diagnosis is unavailable: {stage}")
++        time.sleep(1)
++    raise TimeoutError("Conductor did not reach diagnosis")
++
++
++def submit_once(base: str, answer: str, session=requests):
++    """Never retry an ambiguous POST: status is advisory, official artifacts decide."""
++    try:
++        response = session.post(base + "/submit", json={"solution": answer, "stage": "diagnosis"}, timeout=180)
++        response.raise_for_status()
++        payload = response.json()
++        if str(payload.get("status")) != "200":
++            raise RuntimeError("Conductor did not acknowledge diagnosis")
++        return {"state": "acknowledged", "response": payload}
++    except (requests.Timeout, requests.ConnectionError):
++        stage = None
++        try:
++            response = session.get(base + "/status", timeout=10)
++            response.raise_for_status()
++            stage = response.json().get("stage")
++        except requests.RequestException:
++            pass
++        return {"state": "unknown", "observed_stage": stage, "retry_performed": False}
++
++
++def create_config(session_id: str):
++    from holmes.config import Config
++    from holmes.plugins.toolsets import load_builtin_toolsets
++
++    base = os.environ.get("MCP_SERVER_URL") or (
++        f"http://{os.environ.get('API_HOSTNAME', 'localhost')}:{os.environ.get('MCP_SERVER_PORT', '9954')}"
++    )
++    # Several built-ins are enabled by their class defaults even when
++    # enable_all_toolsets_possible=False. Explicitly disable the entire catalog.
++    toolsets = {toolset.name: {"enabled": False} for toolset in load_builtin_toolsets()}
++    toolsets.update(
++        {
++            "sregym_" + name: {
++                "enabled": True,
++                "type": "mcp",
++                "description": f"SREGym {name} tools",
++                "config": {
++                    "mode": "sse",
++                    "url": base.rstrip("/") + "/" + name + "/sse",
++                    "headers": {"sregym_ssid": session_id},
++                },
++            }
++            for name in ("kubectl", "prometheus", "loki", "jaeger")
++        }
++    )
++    return Config(
++        model=os.environ["AGENT_MODEL_ID"],
++        api_key=os.environ.get("AGENT_API_KEY"),
++        api_base=os.environ.get("AGENT_API_BASE"),
++        max_steps=int(os.environ.get("HOLMES_MAX_STEPS", "30")),
++        toolsets=toolsets,
++    )
++
++
++def run_preflight():
++    from holmes.core.llm import DefaultLLM
++
++    llm = DefaultLLM(
++        model=os.environ["AGENT_MODEL_ID"],
++        api_key=os.environ.get("AGENT_API_KEY"),
++        api_base=os.environ.get("AGENT_API_BASE"),
++        args={"extra_body": {"enable_thinking": False}, "max_tokens": 512},
++    )
++    response = llm.completion(messages=[{"role": "user", "content": "Reply with ok."}])
++    if not response.choices[0].message.content:
++        raise RuntimeError("Holmes model preflight returned no content")
++    print("Holmes model preflight passed")
++
++
++def create_agent(session_id: str, tool_results_dir: Path | None = None):
++    from holmes.core.toolset_manager import PrerequisiteCacheMode
++
++    agent = create_config(session_id).create_toolcalling_llm(
++        enable_all_toolsets_possible=False,
++        prerequisite_cache=PrerequisiteCacheMode.DISABLED,
++        tool_results_dir=tool_results_dir,
++    )
++    agent.llm.args.update(extra_body={"enable_thinking": False}, max_tokens=8192)
++    enabled = {ts.name for ts in agent.tool_executor.enabled_toolsets}
++    if enabled != {"sregym_" + name for name in ("kubectl", "prometheus", "loki", "jaeger")}:
++        raise RuntimeError(f"Unexpected enabled toolsets: {sorted(enabled)}")
++    return agent
++
++
++def run():
++    os.environ.setdefault("OVERRIDE_MAX_OUTPUT_TOKEN", "8192")
++    os.environ.setdefault("LLM_REQUEST_TIMEOUT", "120")
++    from holmes.core.episode_trace import trace_event
++    from holmes.core.prompt import build_initial_ask_messages
++
++    logs = Path(os.environ.get("AGENT_LOGS_DIR", "/logs"))
++    logs.mkdir(parents=True, exist_ok=True)
++    trace_path = logs / "holmes.events.jsonl"
++    # One process per attempt. Appending to an old episode would corrupt provenance.
++    if trace_path.exists():
++        raise FileExistsError(f"Refusing to mix episodes in {trace_path.name}")
++    os.environ["HOLMES_EPISODE_TRACE"] = str(trace_path)
++    session_id = uuid.uuid4().hex
++    base = f"http://{os.environ.get('API_HOSTNAME', 'localhost')}:{os.environ.get('API_PORT', '8000')}"
++    trace_event(
++        "episode_start",
++        session_id=session_id,
++        agent="holmes",
++        agent_version=os.environ.get("HOLMES_SOURCE_REV", "3bd44edf04f9587c778ee8e9b244965190c40fdf+local"),
++        model=os.environ["AGENT_MODEL_ID"],
++        max_steps=int(os.environ.get("HOLMES_MAX_STEPS", "30")),
++    )
++
++    def record_attachments():
++        attachments = []
++        for path in sorted((logs / "tool-results").rglob("*")):
++            if path.is_file():
++                attachments.append(
++                    {
++                        "path": path.relative_to(logs).as_posix(),
++                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
++                        "size_bytes": path.stat().st_size,
++                    }
++                )
++        trace_event("artifact_manifest", attachments=attachments)
++
++    try:
++        wait_for_diagnosis(base)
++        response = requests.get(base + "/get_app", timeout=15)
++        response.raise_for_status()
++        app = response.json()
++        # Do not read or interpolate the problem ID, root cause or grader data.
++        prompt = (
++            "Diagnose the fault in this Kubernetes application. Investigate autonomously using the available tools. "
++            "Do not mitigate or modify application resources. Finish with a natural-language diagnosis of the "
++            "faulty component and root cause; the driver will submit your final answer.\n"
++            f"Application: {app.get('app_name', '')}\n"
++            f"Namespaces: {', '.join(app.get('namespaces') or [app.get('namespace', 'default')])}\n"
++            f"{app.get('descriptions', '')}"
++        )
++        agent = create_agent(session_id, logs / "tool-results")
++        enabled = [ts.name for ts in agent.tool_executor.enabled_toolsets]
++        trace_event("tool_catalog", toolsets=enabled)
++        messages = build_initial_ask_messages(prompt, None, agent.tool_executor)
++        result = agent.call(messages)
++        if not result.result or not result.result.strip():
++            raise RuntimeError("Holmes returned an empty diagnosis")
++        trace_event(
++            "agent_final", answer=result.result, finish_reason=result.finish_reason, num_llm_calls=result.num_llm_calls
++        )
++        submission = submit_once(base, result.result)
++        trace_event("submission", **submission)
++        record_attachments()
++        trace_event("episode_end", state="finished", submission_state=submission["state"])
++        (logs / "holmes-summary.json").write_text(
++            json.dumps(
++                {
++                    "session_id": session_id,
++                    "answer": result.result,
++                    "submission": submission,
++                    "finish_reason": result.finish_reason,
++                    "num_llm_calls": result.num_llm_calls,
++                },
++                ensure_ascii=False,
++                indent=2,
++            ),
++            encoding="utf-8",
++        )
++    except BaseException as exc:
++        record_attachments()
++        trace_event("episode_end", state="error", error_type=type(exc).__name__)
++        raise
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--preflight", action="store_true")
++    args = parser.parse_args()
++    if args.preflight:
++        run_preflight()
++    else:
++        run()
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/llm_backend/get_llm_backend.py b/llm_backend/get_llm_backend.py
+index 2fa35fd..f4b3eaa 100644
+--- a/llm_backend/get_llm_backend.py
++++ b/llm_backend/get_llm_backend.py
+@@ -130,6 +130,12 @@ class LiteLLMBackend:
+                 ]
+             }
+ 
++        if extra_body_json := os.environ.get("LLM_EXTRA_BODY_JSON"):
++            extra_body = json.loads(extra_body_json)
++            if not isinstance(extra_body, dict):
++                raise ValueError("LLM_EXTRA_BODY_JSON must be a JSON object")
++            model_config.setdefault("model_kwargs", {})["extra_body"] = extra_body
++
+         if not self.retry:
+             model_config["max_retries"] = 0
+             model_config.setdefault("model_kwargs", {})["num_retries"] = 0
+diff --git a/main.py b/main.py
+index 8e8fdf5..0e853a4 100644
+--- a/main.py
++++ b/main.py
+@@ -74,6 +74,7 @@ def run_preflight_check(
+ 
+     # Agents that need pre-flight check
+     agent_driver_modules: dict[str, str] = {
++        "holmes": "clients.holmes.driver",
+         "stratus": "clients.stratus.stratus_agent.driver.driver",
+         "claudecode": "clients.claudecode.driver",
+         "codex": "clients.codex.driver",
+@@ -96,6 +97,8 @@ def run_preflight_check(
+         return
+ 
+     check_cmd = f"python3 -c 'from {module_path} import run_preflight; run_preflight()'"
++    if agent_name == "holmes":
++        check_cmd = f"/opt/holmes/.venv/bin/python -c 'from {module_path} import run_preflight; run_preflight()'"
+     if install_script:
+         check_cmd = f"/opt/sregym/install-scripts/{install_script} > /dev/null 2>&1 && {check_cmd}"
+ 
+@@ -914,7 +917,7 @@ def _run_benchmark(args, *, judge_backend: str = "api", agent_image: str | None
+                 # Reuse the image already prepared for a subscription judge.
+                 force_build=args.force_build and agent_image is None,
+                 k8s_proxy_port=conductor_config.k8s_proxy_listen_port,
+-                image=agent_image,
++                image=agent_image or getattr(args, "agent_image", None),
+             )
+ 
+         # Pre-flight check — makes a real (minimal) API call inside the agent
+@@ -1131,6 +1134,7 @@ if __name__ == "__main__":
+         default=1800,
+         help="Agent timeout in seconds after deployment (default: 1800)",
+     )
++    parser.add_argument("--agent-image", default=None, help="Prebuilt agent image; preserves container isolation")
+     parser.add_argument(
+         "--resume",
+         type=str,
+diff --git a/sregym/paths.py b/sregym/paths.py
+index 5bcf20f..3c44037 100644
+--- a/sregym/paths.py
++++ b/sregym/paths.py
+@@ -9,7 +9,7 @@ BASE_PARENT_DIR = Path(__file__).resolve().parent.parent
+ TARGET_MICROSERVICES = BASE_PARENT_DIR / "SREGym-applications"
+ 
+ # Cache directories
+-CACHE_DIR = HOME_DIR / "cache_dir"
++CACHE_DIR = Path(os.environ.get("SREGYM_CACHE_DIR", str(HOME_DIR / "cache_dir"))).expanduser()
+ LLM_CACHE_FILE = CACHE_DIR / "llm_cache.json"
+ 
+ # Cluster baseline state snapshot (captured from a fresh cluster)
+diff --git a/sregym/service/container_runner.py b/sregym/service/container_runner.py
+index 410bfa1..ab4f599 100644
+--- a/sregym/service/container_runner.py
++++ b/sregym/service/container_runner.py
+@@ -250,6 +250,7 @@ class ContainerRunner:
+         "SESSION_TTL",
+         "LLM_QUERY_MAX_RETRIES",
+         "LLM_QUERY_INIT_RETRY_DELAY",
++        "LLM_EXTRA_BODY_JSON",
+         "WAIT_FOR_POD_READY_TIMEOUT",
+     ]
+ 
+diff --git a/sregym/service/k8s_proxy.py b/sregym/service/k8s_proxy.py
+index 85e1772..8914ef8 100644
+--- a/sregym/service/k8s_proxy.py
++++ b/sregym/service/k8s_proxy.py
+@@ -370,9 +370,11 @@ class KubernetesAPIProxy:
+             self.api_port = int(os.environ.get("KUBERNETES_SERVICE_PORT", "443"))
+         else:
+             # Running outside the cluster — load from kubeconfig
+-            # Always load from the default kubeconfig path, ignoring KUBECONFIG env var
+-            # This prevents circular dependency if KUBECONFIG points to our proxy
+-            default_kubeconfig = os.path.expanduser("~/.kube/config")
++            # Keep admin and filtered-agent credentials separate. KUBECONFIG may
++            # already point back to this proxy, so do not use it as a fallback.
++            default_kubeconfig = os.path.expanduser(
++                os.environ.get("SREGYM_ADMIN_KUBECONFIG", "~/.kube/config")
++            )
+             config.load_kube_config(config_file=default_kubeconfig)
+             self.api_host, self.api_port, self.ca_cert, self.client_cert, self.client_key = self._load_cluster_config(
+                 kubeconfig_path=default_kubeconfig
+diff --git a/sregym/traces/convert.py b/sregym/traces/convert.py
+index 2ac417d..fa55b6a 100644
+--- a/sregym/traces/convert.py
++++ b/sregym/traces/convert.py
+@@ -124,6 +124,9 @@ def _find_gemini_session_file(run_dir: Path) -> Path | None:
+ 
+ def _find_session_file(run_dir: Path, tool: str) -> Path | None:
+     """Resolve a canonical SREGym run directory to its native session file."""
++    if tool == "holmes":
++        path = run_dir / "holmes.events.jsonl"
++        return path if path.is_file() else None
+     if tool == "codex":
+         return _find_codex_session_file(run_dir)
+     if tool == "copilot":
+@@ -326,6 +329,9 @@ def convert_run(run_dir: Path | str) -> Trajectory | None:
+     boundary = _find_diagnosis_submitted_step(trajectory)
+     if boundary is not None:
+         sregym_meta["diagnosis_submitted_step"] = boundary
++        if info.tool == "holmes":
++            # The driver acknowledgement proves receipt, never correctness.
++            sregym_meta["submitted"] = True
+     # Merge rather than overwrite so an adapter that enriches ``extra.sregym``
+     # (e.g. stratus adds per-stage ``stages``) is not silently wiped. The
+     # convert-level meta (path, application, result-JSON submitted) wins on key
+diff --git a/sregym/traces/holmes_export.py b/sregym/traces/holmes_export.py
+new file mode 100644
+index 0000000..bb9e3c0
+--- /dev/null
++++ b/sregym/traces/holmes_export.py
+@@ -0,0 +1,163 @@
++"""Strict host-side acceptance and SFT-format export; official scores stay untouched."""
++
++from __future__ import annotations
++
++import argparse
++import ast
++import csv
++import hashlib
++import json
++from pathlib import Path
++
++from atif_converter.adapters.holmes import convert_file
++
++DEVELOPMENT_CASES = {"network_policy_block", "wrong_service_selector_social_network"}
++
++
++def _decode(value):
++    try:
++        return json.loads(value)
++    except (TypeError, ValueError):
++        try:
++            return ast.literal_eval(value)
++        except (TypeError, ValueError, SyntaxError):
++            return value
++
++
++def check_prompt(messages):
++    pending = set()
++    for message in messages:
++        if message.get("role") == "assistant":
++            pending.update(call["id"] for call in message.get("tool_calls") or [])
++        if message.get("role") == "tool":
++            call_id = message.get("tool_call_id")
++            if call_id not in pending:
++                raise ValueError("Tool result without an earlier matching call")
++            pending.remove(call_id)
++    if pending:
++        raise ValueError("Model input has unanswered tool calls")
++
++
++def export_run(run_dir: Path):
++    raw_path = run_dir / "holmes.events.jsonl"
++    trajectory = convert_file(raw_path)
++    issues = list(trajectory.extra["holmes"]["capture_issues"])
++    case = run_dir.parent.name
++    csv_path = run_dir / f"{case}_results.csv"
++    if not csv_path.is_file():
++        issues.append("missing_official_result")
++        row = {}
++    else:
++        with csv_path.open(encoding="utf-8") as handle:
++            rows = list(csv.DictReader(handle))
++        if len(rows) != 1:
++            issues.append("invalid_official_result_count")
++        row = rows[0] if rows else {}
++    diagnosis = _decode(row.get("Diagnosis", ""))
++    diagnosis = diagnosis if isinstance(diagnosis, dict) else {}
++    # Current upstream flattens nested results into Diagnosis.* CSV columns.
++    # Retain compatibility with earlier exports containing one Diagnosis cell.
++    for key in ("success", "composite_score"):
++        if "Diagnosis." + key in row:
++            diagnosis[key] = _decode(row["Diagnosis." + key])
++    complete = row.get("run_status") == "complete"
++    cleanup_failed = str(row.get("cleanup_failed", "")).lower() in ("true", "1")
++    if not complete:
++        issues.append("official_run_incomplete")
++    if cleanup_failed:
++        issues.append("cleanup_failed")
++    positive = diagnosis.get("success") is True and complete and not issues
++    samples = []
++    events = [json.loads(line) for line in raw_path.read_text(encoding="utf-8").splitlines() if line.strip()]
++    requests = {event["request_id"]: event for event in events if event["event"] == "model_request"}
++    for event in events:
++        if event["event"] != "model_response":
++            continue
++        request_event = requests[event["request_id"]]
++        if request_event.get("purpose") != "investigation":
++            continue
++        request = request_event["request"]
++        try:
++            check_prompt(request["messages"])
++        except ValueError as exc:
++            issues.append(str(exc))
++            continue
++        choice = event["response"]["choices"][0]
++        if choice.get("finish_reason") not in ("stop", "tool_calls"):
++            continue
++        assistant = {
++            k: v for k, v in choice["message"].items() if k in ("role", "content", "tool_calls") and v is not None
++        }
++        assistant["role"] = "assistant"
++        messages = request["messages"] + [assistant]
++        if positive:
++            samples.append(
++                {
++                    "schema_version": 1,
++                    "messages": messages,
++                    "tools": request.get("tools", []),
++                    "loss_mask_messages": [0] * (len(messages) - 1) + [1],
++                    "provenance": {
++                        "session_id": trajectory.session_id,
++                        "request_id": event["request_id"],
++                        "case": case,
++                        "split": "dev" if case in DEVELOPMENT_CASES else "unassigned",
++                        "raw_sha256": trajectory.extra["holmes"]["raw_sha256"],
++                        "teacher": trajectory.agent.model_name,
++                        "purpose": "format-validation-only",
++                        "tokenizer": None,
++                        "chat_template": None,
++                    },
++                }
++            )
++    if issues:
++        samples = []
++    acceptance = {
++        "schema_version": 1,
++        "case": case,
++        "capture_complete": trajectory.extra["holmes"]["capture_complete"],
++        "official_run_complete": complete,
++        "diagnosis_success": diagnosis.get("success"),
++        "composite_score": diagnosis.get("composite_score"),
++        "issues": issues,
++        "sft_samples": len(samples),
++        "split": "dev" if case in DEVELOPMENT_CASES else "unassigned",
++    }
++    (run_dir / "data-acceptance.json").write_text(
++        json.dumps(acceptance, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
++    )
++    (run_dir / "sft-format-samples.jsonl").write_text(
++        "".join(json.dumps(x, ensure_ascii=False) + "\n" for x in samples), encoding="utf-8"
++    )
++    files = {}
++    for path in sorted(run_dir.rglob("*")):
++        if path.is_file() and not path.is_symlink() and path.name != "artifact-manifest.json":
++            files[path.relative_to(run_dir).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
++    (run_dir / "artifact-manifest.json").write_text(
++        json.dumps({"schema_version": 1, "sha256": files}, indent=2) + "\n", encoding="utf-8"
++    )
++    return acceptance
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("path", type=Path)
++    args = parser.parse_args()
++    files = (
++        [args.path / "holmes.events.jsonl"]
++        if (args.path / "holmes.events.jsonl").is_file()
++        else sorted(args.path.rglob("holmes.events.jsonl"))
++    )
++    failed = not files
++    for file in files:
++        try:
++            result = export_run(file.parent)
++        except Exception as exc:
++            result = {"path": str(file.parent), "issues": [f"{type(exc).__name__}: {exc}"]}
++        print(json.dumps(result, ensure_ascii=False))
++        failed |= bool(result["issues"])
++    raise SystemExit(1 if failed else 0)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tests/traces/test_holmes_adapter.py b/tests/traces/test_holmes_adapter.py
+new file mode 100644
+index 0000000..2804221
+--- /dev/null
++++ b/tests/traces/test_holmes_adapter.py
+@@ -0,0 +1,199 @@
++import csv
++import json
++from unittest.mock import Mock
++
++import pytest
++import requests
++
++from atif_converter import convert, detect_agent
++from clients.holmes.driver import submit_once
++from sregym.traces import store
++from sregym.traces.holmes_export import export_run
++
++
++def write_episode(tmp_path, *, omit_tool=False):
++    timestamp = "2026-09-19T00:00:00+00:00"
++    events = [
++        {"event": "episode_start", "agent": "holmes", "session_id": "test-1", "agent_version": "test", "model": "test"},
++        {
++            "event": "model_request",
++            "request_id": "a",
++            "purpose": "investigation",
++            "request": {"messages": [{"role": "user", "content": "diagnose"}], "tools": []},
++        },
++        {
++            "event": "model_response",
++            "request_id": "a",
++            "response": {
++                "model": "test",
++                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
++                "choices": [
++                    {
++                        "message": {
++                            "content": "",
++                            "tool_calls": [{"id": "c1", "function": {"name": "query", "arguments": "{}"}}],
++                        },
++                        "finish_reason": "tool_calls",
++                    }
++                ],
++            },
++        },
++    ]
++    if not omit_tool:
++        events.append(
++            {"event": "tool_end", "result": {"tool_call_id": "c1", "result": {"status": "error", "error": "timeout"}}}
++        )
++    events.extend(
++        [
++            {
++                "event": "model_request",
++                "request_id": "b",
++                "purpose": "investigation",
++                "request": {"messages": [{"role": "system", "content": "compressed: query timed out"}], "tools": []},
++            },
++            {
++                "event": "model_response",
++                "request_id": "b",
++                "response": {
++                    "model": "test",
++                    "usage": {"prompt_tokens": 4, "completion_tokens": 3},
++                    "choices": [{"message": {"content": "insufficient evidence"}, "finish_reason": "stop"}],
++                },
++            },
++            {"event": "artifact_manifest", "attachments": []},
++            {"event": "episode_end", "state": "finished"},
++        ]
++    )
++    path = tmp_path / "holmes.events.jsonl"
++    path.write_text(
++        "\n".join(json.dumps({"schema_version": 1, "timestamp": timestamp, **event}) for event in events),
++        encoding="utf-8",
++    )
++    return path
++
++
++def test_conversion_preserves_error_and_effective_context(tmp_path):
++    path = write_episode(tmp_path)
++    assert detect_agent(path) == "holmes"
++    trajectory = convert(path)
++    assert trajectory.extra["holmes"]["capture_complete"]
++    assert "timeout" in trajectory.steps[1].observation.results[0].content
++    assert trajectory.steps[2].extra["effective_request"]["messages"] == [
++        {"role": "system", "content": "compressed: query timed out"}
++    ]
++    assert trajectory.final_metrics.total_prompt_tokens == 14
++
++
++def test_missing_tool_result_marks_incomplete(tmp_path):
++    trajectory = convert(write_episode(tmp_path, omit_tool=True))
++    assert not trajectory.extra["holmes"]["capture_complete"]
++    assert "missing_tool_result:c1" in trajectory.extra["holmes"]["capture_issues"]
++
++
++def test_missing_attachment_is_not_complete(tmp_path):
++    path = write_episode(tmp_path)
++    events = [json.loads(line) for line in path.read_text().splitlines()]
++    next(e for e in events if e["event"] == "artifact_manifest")["attachments"] = [
++        {"path": "tool-results/missing.txt", "sha256": "0" * 64, "size_bytes": 1}
++    ]
++    path.write_text("\n".join(json.dumps(e) for e in events))
++    trajectory = convert(path)
++    assert not trajectory.extra["holmes"]["capture_complete"]
++    assert "missing_or_unsafe_attachment:tool-results/missing.txt" in trajectory.extra["holmes"]["capture_issues"]
++
++
++def test_repeated_ingestion_deduplicates(tmp_path):
++    trajectory = convert(write_episode(tmp_path))
++    path = tmp_path / "trajectory.json"
++    path.write_text(json.dumps(trajectory.to_json_dict()), encoding="utf-8")
++    db = tmp_path / "traces.db"
++    store.ingest_trajectory_file(path, db)
++    store.ingest_trajectory_file(path, db)
++    with store.connect(db) as conn:
++        assert conn.execute("SELECT count(*) FROM trajectories").fetchone()[0] == 1
++
++
++def test_ambiguous_submission_is_not_retried():
++    session = Mock()
++    session.post.side_effect = requests.Timeout()
++    session.get.return_value.json.return_value = {"stage": "done"}
++    assert submit_once("http://conductor", "diagnosis", session)["state"] == "unknown"
++    session.post.assert_called_once()
++
++
++def test_submission_http_error_is_not_acknowledgment():
++    session = Mock()
++    session.post.return_value.raise_for_status.side_effect = requests.HTTPError("409")
++    with pytest.raises(requests.HTTPError):
++        submit_once("http://conductor", "diagnosis", session)
++    session.post.assert_called_once()
++
++
++@pytest.mark.parametrize("success,expected", [(True, 2), (False, 0)])
++def test_sft_export_requires_official_success_and_is_repeatable(tmp_path, success, expected):
++    run = tmp_path / "network_policy_block" / "run_1"
++    run.mkdir(parents=True)
++    write_episode(run)
++    with (run / "network_policy_block_results.csv").open("w", newline="", encoding="utf-8") as handle:
++        writer = csv.DictWriter(handle, fieldnames=["run_status", "Diagnosis"])
++        writer.writeheader()
++        writer.writerow(
++            {"run_status": "complete", "Diagnosis": repr({"success": success, "composite_score": 1 if success else 0})}
++        )
++    assert export_run(run)["sft_samples"] == expected
++    before = (run / "sft-format-samples.jsonl").read_bytes()
++    export_run(run)
++    assert (run / "sft-format-samples.jsonl").read_bytes() == before
++    if expected:
++        sample = json.loads(before.splitlines()[-1])
++        assert sample["messages"][0]["content"] == "compressed: query timed out"
++        assert sample["loss_mask_messages"] == [0, 1]
++
++
++def test_admin_config_does_not_fall_back_to_agent_config(monkeypatch, tmp_path):
++    from sregym.service import k8s_proxy
++
++    admin = str(tmp_path / "admin.yaml")
++    monkeypatch.setenv("SREGYM_ADMIN_KUBECONFIG", admin)
++    monkeypatch.setenv("KUBECONFIG", str(tmp_path / "filtered-agent.yaml"))
++    monkeypatch.setattr(k8s_proxy.KubernetesAPIProxy, "_INCLUSTER_TOKEN_PATH", str(tmp_path / "no-token"))
++    load = Mock()
++    monkeypatch.setattr(k8s_proxy.config, "load_kube_config", load)
++    extraction = Mock(return_value=("localhost", 6443, "ca", "cert", "key"))
++    monkeypatch.setattr(k8s_proxy.KubernetesAPIProxy, "_load_cluster_config", extraction)
++    k8s_proxy.KubernetesAPIProxy()
++    load.assert_called_once_with(config_file=admin)
++    extraction.assert_called_once_with(kubeconfig_path=admin)
++
++
++def test_sft_reads_current_flattened_official_csv(tmp_path):
++    run = tmp_path / "network_policy_block" / "run_1"
++    run.mkdir(parents=True)
++    write_episode(run)
++    (run / "network_policy_block_results.csv").write_text(
++        "run_status,Diagnosis.success,Diagnosis.composite_score\ncomplete,True,1.0\n", encoding="utf-8"
++    )
++    result = export_run(run)
++    assert result["diagnosis_success"] is True
++    assert result["composite_score"] == 1.0
++    assert result["sft_samples"] == 2
++
++
++def test_acknowledged_driver_submission_is_indexed(tmp_path):
++    from sregym.traces.convert import convert_run
++
++    run = tmp_path / "batch" / "holmes" / "network_policy_block" / "run_1"
++    run.mkdir(parents=True)
++    path = write_episode(run)
++    events = [json.loads(line) for line in path.read_text().splitlines()]
++    events.insert(
++        -1,
++        {
++            "event": "submission",
++            "state": "acknowledged",
++            "timestamp": events[0]["timestamp"],
++            "response": {"status": "200", "message": "Submission received"},
++        },
++    )
++    path.write_text("\n".join(json.dumps(e) for e in events))
++    assert convert_run(run).extra["sregym"]["submitted"] is True

@@ -1,0 +1,12 @@
+{
+  "holmesgpt": {
+    "url": "https://github.com/HolmesGPT/holmesgpt.git",
+    "commit": "3bd44edf04f9587c778ee8e9b244965190c40fdf",
+    "branch": "sre-baseline"
+  },
+  "sregym": {
+    "url": "https://github.com/SREGym/SREGym.git",
+    "commit": "46c853db3a79332ea1c0ada076d888cec7a02f7e",
+    "branch": "holmes-baseline"
+  }
+}
