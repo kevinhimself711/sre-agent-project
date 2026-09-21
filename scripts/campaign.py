@@ -38,6 +38,15 @@ def load_manifest(path):
         raise ValueError("Unsupported experiment configuration")
     if spec["repetitions"] != 3 or spec["max_replacements"] != 4 or spec["enable_thinking"]:
         raise ValueError("Experiment differs from the approved finite budget")
+    expected = {
+        "agent_model": "openai/qwen3.8-max",
+        "judge_model": "openai/qwen3.8-max",
+        "max_steps": 30,
+        "max_output_tokens": 8192,
+        "agent_timeout": 1800,
+    }
+    if any(spec.get(key) != value for key, value in expected.items()):
+        raise ValueError("Model or budget differs from the frozen runtime configuration")
     families = [c["family"] for cases in spec["cases"].values() for c in cases]
     if len(set(families)) != len(families):
         raise ValueError("Fault families must not cross development and validation")
@@ -407,6 +416,11 @@ def main():
     if args.dry_run:
         print(json.dumps(schedule(spec, args.phase, "recovery"), indent=2))
         return
+    if (
+        os.environ.get("AGENT_MODEL_ID") != spec["agent_model"]
+        or os.environ.get("JUDGE_MODEL_ID") != spec["judge_model"]
+    ):
+        raise RuntimeError("Source baseline.env first; runtime models must match the manifest")
     provenance = {
         "commit": subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=root, text=True
