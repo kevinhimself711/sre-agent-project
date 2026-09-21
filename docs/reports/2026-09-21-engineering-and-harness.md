@@ -1,6 +1,6 @@
 # GitHub 工程化与 Harness 实验实施报告
 
-状态：实施中；以下阶段事实随验收补充，不代表 36 次实验已经完成。
+状态：已完成。开发对照 24/24、冻结验证 12/12 均取得有效测量；结果未用于冻结后调参。
 
 ## 已完成的工程工作
 
@@ -25,7 +25,7 @@ campaign 是上游 runner 外的一层有限实验编排，复用原有部署、
 - PR #1 工程化配置已合并；`637d5e6` 的首次评测工作流在源码重建阶段失败，尚未调用模型或创建正式实验 attempt。原因是缓存 checkout 已有同名 baseline 分支，随后节点验证还发现浅克隆不能用作 Git reference。两项修正经完整 CI 后在 PR #4 合并。
 - 本轮实验固定项目提交 `f86969a784f939a2a75f1eb42aa8514a81ff2108`，对应 CI `35581916746` 全部成功。开发工作流 `35582115092` 已实际完成独立源码重建、镜像构建及两个原生 smoke case（2 passed，287 deselected，退出码 0）。
 - 冻结镜像为 `sha256:6c9300e43e1fcee42535b65138fea6ff592f41b8ce1f388f662cfaafbf674c76`。续跑和验证阶段复用该镜像，若镜像 ID 或源码 commit 不符则拒绝重建，防止阶段间版本漂移。
-- 正式实验正在运行。中途审计观察到 kubectl 的管道及 RBAC 拒绝在 recovery 中被正确标为 ERROR，而 baseline 仍返回 SUCCESS；这只证明错误语义差异，不等于诊断提分。
+- 正式实验已完成。审计观察到 kubectl 的管道及 RBAC 拒绝在 recovery 中被正确标为 ERROR，而 baseline 仍返回 SUCCESS；这证明错误语义修正生效，不等于诊断提分。
 
 ## 运行期间发现的互斥边界
 
@@ -47,4 +47,24 @@ campaign 是上游 runner 外的一层有限实验编排，复用原有部署、
 
 开发对照随后完成 24/24 条有效 attempt，replacement 为 0，所有完成项均通过 judge、data 和 cleanup 验收。按预定排序，`combined` 被选为冻结候选：baseline 与 combined 均为 3/6 官方成功，composite 均值分别为 0.500 与 0.593；combined 的可捕获 Agent token 合计约 5.81M，高于 baseline 的约 2.89M。NetworkPolicy 在四种配置中都没有官方成功，部分运行取得了 0.56、0.67 等局部 composite，但没有完成正确根因确认。候选选择只表示本开发矩阵中的观察排序，不宣称稳定提分或泛化收益。
 
-开发选择完成后，validation workflow `35602219102` 从 `main` 的 frozen commit `f86969a784f939a2a75f1eb42aa8514a81ff2108` 启动，读取同一 campaign state 中的 `combined` 候选，计划运行 `namespace_memory_limit` 与 `readiness_probe_misconfiguration_social_network` 两个冻结验证案例，baseline 和 combined 各 3 次。验证阶段不再根据中间结果调参；镜像、模型、预算和工具权限保持不变。
+开发选择完成后，validation 从 `main` 的 frozen commit `f86969a784f939a2a75f1eb42aa8514a81ff2108` 启动，读取同一 campaign state 中的 `combined` 候选，在 `namespace_memory_limit` 与 `readiness_probe_misconfiguration_social_network` 上完成 baseline 和 combined 各 3 次。最终成功的续跑 workflow 为 `35620988887`；验证阶段没有根据中间结果调参，镜像、模型、预算和工具权限保持不变。
+
+## 冻结验证结果与保留决策
+
+12 条有效 validation 全部完成评分、数据验收和清理。baseline 为 3/6 官方成功，平均 composite 0.6683；combined 为 2/6 官方成功，平均 composite 0.6867。combined 的可捕获 Agent 输入加输出 token 为 3,005,686，baseline 为 1,197,152，约增加到 2.51 倍；平均调查墙钟约从 53.28 秒增至 124.61 秒。
+
+逐案例看，readiness probe 上两者都是 2/3 成功，combined composite 为 0.89、baseline 为 0.78；namespace memory 上 baseline 为 1/3、combined 为 0/3，composite 分别为 0.56 和 0.48。combined 最后一条 readiness 在复核后仍把非致命 OTLP DNS 历史噪声误判为初始化阻塞，说明复核没有稳定抑制历史错误。namespace memory 的 6 次都取得了 ResourceQuota 与 `must specify memory` 证据，但多数最终答案把 `search` deployment 写成故障源；官方 oracle 要求把 namespace 级 `memory-limit-quota` 识别为注入源，combined 没有修复这一表述和归因边界。
+
+因此 A（结束前诊断复核）不进入推荐运行配置：它没有增加冻结成功数，并显著增加 token、工具调用和调查时长。实验实现与 frozen SHA 保留用于复现，但推荐配置关闭复核。B（MCP 错误语义与恢复提示）保留为 `recovery` 配置，因为它修正了 `Command Rejected` 被当作 SUCCESS 的语义错误；本轮不宣称它带来诊断提分。默认 baseline 仍关闭两个开关，需保留 B 时先 source `configs/baseline.env`，再 source `configs/recovery.env`。
+
+完整逐案例表见 `docs/reports/2026-09-21-campaign-measurements.md`。本地收集 524 个 evidence 文件，39 个 attempt 的产物哈希、一次复核约束、真实模型输入、工具配对、失败正样本隔离和 validation 禁止 SFT 导出审计均为 0 项问题。账单费用仍未知。
+
+## Validation 环境失败与可比性
+
+validation state 共记录 15 个 attempt，其中 12 个有效、3 个替代。#27 在 setup 中断且没有诊断或评分；#30、#31 因 Social Network 初始化和 cleanup deadline 失败，均未进入有效结果。替代计数为 3/4，符合预定上限。每次继续前都显式核验 `kind-sre-agent-dev`、四节点 Ready、业务 namespace 和 NetworkPolicy 为空。
+
+运行期确认 `git clone` 经 SSH 临时代理会出现连接拒绝、HTTP/2 stream reset 和 early EOF。为完成同一 frozen campaign，后续 readiness 的 setup-only init container 改为下载同一固定 revision `6ecb09706140f8730b5385c08f1386c654c3c526` 的 GitHub source archive。该操作发生在故障注入前，不改变工作负载源码、Agent 工具、权限或评分；有效 readiness 中 baseline 和 combined 都是 repeat 1 使用原 clone、repeat 2/3 使用 archive，因此传输方式在两组间平衡。它仍属于必须披露的环境操作，不能归因于 Harness 收益。
+
+## 实验后工程修正
+
+冻结结果确定后，`bootstrap_social_proxy.py` 固化了本轮验证过的恢复方式：固定 commit source archive、空闲连接不主动断开、当前 generation 连续三次完整 rollout 后才关闭代理。新增离线测试覆盖两种上游 clone 命令、未知命令拒绝和稳定 rollout 判定。此代码属于实验后可靠性修正，没有替换 frozen commit 或回写结果。
