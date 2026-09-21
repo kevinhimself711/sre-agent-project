@@ -31,7 +31,8 @@ def main():
             raise RuntimeError(f"{repo} already exists; leave the existing checkout untouched")
         source = str(args.cache / name) if args.cache else info["url"]
         git(ROOT, "clone", source, str(repo))
-        git(repo, "checkout", "-b", info["branch"], info["commit"])
+        # This is a newly created clone. A local cache can already have this branch.
+        git(repo, "checkout", "-B", info["branch"], info["commit"])
         git(repo, "apply", "--check", str(ROOT / "patches" / f"{name}.patch"))
         git(repo, "apply", str(ROOT / "patches" / f"{name}.patch"))
         if name == "sregym" and not args.skip_applications:
