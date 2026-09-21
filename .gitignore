@@ -2,6 +2,8 @@
 /repos/
 /artifacts/
 /cache/
+/bin
+/tools-venv
 /configs/kubeconfig
 /Bailian API.txt
 /docs/Computing Resources/*info.txt

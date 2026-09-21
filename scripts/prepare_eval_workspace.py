@@ -6,6 +6,17 @@ import subprocess
 from pathlib import Path
 
 
+def ensure_managed_symlink(path: Path, target: Path, *, target_is_directory: bool = False):
+    """Create one runtime-only link and reject an unexpected existing target."""
+    if path.is_symlink():
+        if path.resolve() != target.resolve():
+            raise RuntimeError(f"Managed symlink {path} points outside the runtime cache")
+        return
+    if path.exists():
+        raise RuntimeError(f"Managed runtime path is not a symlink: {path}")
+    path.symlink_to(target, target_is_directory=target_is_directory)
+
+
 def main():
     source = Path(__file__).resolve().parents[1]
     sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
@@ -17,6 +28,11 @@ def main():
             ["git", "clone", "--local", "--no-hardlinks", str(source), str(destination)], check=True
         )
         subprocess.run(["git", "checkout", "--detach", sha], cwd=destination, check=True)
+    destination_sha = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=destination, text=True
+    ).strip()
+    if destination_sha != sha:
+        raise RuntimeError("Evaluation checkout does not match the requested frozen commit")
     if subprocess.check_output(["git", "status", "--porcelain"], cwd=destination).strip():
         raise RuntimeError("Evaluation checkout has uncommitted project changes")
     env = {**os.environ, "SRE_PROJECT_ROOT": str(destination)}
@@ -65,11 +81,13 @@ def main():
     for directory in ("artifacts", "cache"):
         (destination / directory).mkdir(exist_ok=True)
     for directory in ("bin", "tools-venv"):
-        if not (destination / directory).exists():
-            (destination / directory).symlink_to(cache / directory, target_is_directory=True)
+        ensure_managed_symlink(
+            destination / directory,
+            cache / directory,
+            target_is_directory=True,
+        )
     kubeconfig = destination / "configs/kubeconfig"
-    if not kubeconfig.exists():
-        kubeconfig.symlink_to(cache / "configs/kubeconfig")
+    ensure_managed_symlink(kubeconfig, cache / "configs/kubeconfig")
     subprocess.run(
         [
             str(destination / ".venv/bin/python"),

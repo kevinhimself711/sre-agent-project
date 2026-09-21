@@ -10,13 +10,17 @@ PR CI 在 GitHub Linux runner 重建固定上游并执行离线回归，不读�
 
 真实评测通过 `Frozen diagnosis campaign` 手动工作流执行，仅允许 `main` 且要求同一 SHA 的 CI 成功。`dev` 为 24 次，之后 `validation` 搭配 `resume=true` 为 12 次；候选由冻结规则选择。工作流使用 pci-2 专用 runner，运行目录为 `~/sre-agent-eval/workspaces/<commit>`，与开发源码分开。依赖环境仅在锁文件一致时复用；模型上下文由对应源码和镜像运行，构建仍是节点环境打包，尚未声称可独立重建镜像。
 
-当前网络下，在 Windows 启动一次工作流 worker 并保持此终端运行：
+当前网络下，在 Windows 启动持久代理 worker。进程与脱敏日志写入忽略的
+`artifacts/`，终端或 Codex 回合结束不会断开正在运行的 workflow：
 
 ```powershell
-uv run python scripts/remote.py --proxy run 'cd "$HOME/sre-agent-runner"; export PATH="$HOME/sre-agent-project/tools-venv/bin:$PATH"; ./run.sh --once'
+uv run python scripts/runner_proxy.py start
+uv run python scripts/runner_proxy.py status
+# 冻结实验和产物上传全部结束后：
+uv run python scripts/runner_proxy.py stop
 ```
 
-它为该次工作流保留临时网络代理，任务完成后 worker 退出；下一阶段重新启动。API key 由私有仓库 `BAILIAN_API_KEY` secret 注入，不放入命令或配置。模型与集群参数来自 `configs/baseline.env`，四种策略配置来自 `configs/campaign-20260921.json`。所有入口共享节点文件锁；中断后环境未恢复时拒绝启动下一题。
+代理 controller 会先确认 runner 已进入 `Listening for Jobs` 再返回；重复启动会拒绝创建第二个 runner。API key 由私有仓库 `BAILIAN_API_KEY` secret 注入，不放入命令或配置。模型与集群参数来自 `configs/baseline.env`，四种策略配置来自 `configs/campaign-20260921.json`。所有入口共享节点文件锁；中断后环境未恢复时拒绝启动下一题。
 
 节点直接运行时，先设置 `SRE_PROJECT_ROOT`、`SRE_AGENT_IMAGE`，再 source 对应 `configs/baseline.env`，使用该工作区 `.venv/bin/python scripts/campaign.py --manifest configs/campaign-20260921.json --phase dev`；已有 campaign 必须显式添加 `--resume`。恢复仅在 episode 边界进行，不能重放结果不确定的提交。
 
