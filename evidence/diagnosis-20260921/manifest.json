@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "mode": "full",
+  "campaign_id": "diagnosis-20260921",
+  "source_provenance": {
+    "commit": "f86969a784f939a2a75f1eb42aa8514a81ff2108",
+    "manifest_sha256": "c9b2cf1fc710890e104187f224d2256834b3633d841f919425ba3a43c2adf4cb",
+    "patches": {
+      "holmesgpt": {
+        "base_commit": "3bd44edf04f9587c778ee8e9b244965190c40fdf",
+        "patch_sha256": "cbb0ceebb2c04a89e273f6db2a0b47c088fee10440bed32b6ee79a18ac839533"
+      },
+      "sregym": {
+        "base_commit": "46c853db3a79332ea1c0ada076d888cec7a02f7e",
+        "patch_sha256": "4a5d845121de6a4c8df20de2e03fd442fb42a1900bf63f313a432f0c0847cbf1"
+      }
+    },
+    "baseline_config_sha256": "1de4f79f0b62987dc9f051444200324b0d27eb95fb6f2697b146085330ca57d1",
+    "review_prompt_sha256": "5df472df5c2c0e9b443b5e18082fb95c902c530b72d5555f7972790a179dbd95",
+    "agent_model": "openai/qwen3.8-max",
+    "judge_model": "openai/qwen3.8-max",
+    "image_id": "sha256:6c9300e43e1fcee42535b65138fea6ff592f41b8ce1f388f662cfaafbf674c76"
+  },
+  "attempt_count": 39,
+  "prompt_variants": [
+    "baseline",
+    "combined",
+    "recovery",
+    "review"
+  ],
+  "files": {
+    "attempts.jsonl": {
+      "bytes": 1625894,
+      "sha256": "d3a1645ec067d12978a8a65e72237bd4d5d0de42e20d771b86dc60c97e5309e8"
+    },
+    "prompt.txt": {
+      "bytes": 108050,
+      "sha256": "1b0d3936c7593584d33fedfac060546f2f391447367752c049954f7ff74f7b95"
+    }
+  },
+  "safety": {
+    "raw_traces_excluded": true,
+    "request_bodies_excluded_from_attempts": true,
+    "full_tool_result_bodies_excluded": true,
+    "package_is_not_agent_input": true
+  }
+}

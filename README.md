@@ -26,6 +26,8 @@ uv run python scripts/runner_proxy.py stop
 
 每个 attempt 的原始证据、官方结果和验收位于工作区 `artifacts/campaigns/diagnosis-20260921/`；GitHub 仅上传汇总和产物哈希。使用 `uv run python scripts/collect_artifacts.py --remote-root <绝对工作区路径> --campaign --output artifacts/pci-2-campaign` 收集原始证据。冻结验证集不导出 SFT 样本，复核前草稿不作为正样本目标。
 
+campaign 收尾会自动生成小型脱敏审阅包到 `artifacts/publish/evidence/<campaign_id>/`，其中包含 `attempts.jsonl`、各 harness 首个实际 prompt/schema 的 `prompt.txt` 和哈希清单；请求全文、工具结果全文和原始 trace 不进入该包。把已下载的 campaign 发布到根仓库时运行 `uv run python scripts/export_campaign_evidence.py artifacts/pci-2/campaigns/<campaign_id> --output evidence/<campaign_id>`，提交前检查包不进入 Agent 镜像、skills 或任何 prompt。需要只给聚合数字时加 `--sealed`。
+
 后续镜像 CD 才会从锁文件构建并发布 GHCR digest，本轮不自动部署其他集群。
 
 本工程在固定上游版本上接入 Holmes 原生 Agent Loop 与 SREGym 官方 MCP、runner、diagnosis judge 和复位流程。实现范围是可复现 baseline 与轨迹闭环，本轮不声称 harness 提分，也不训练模型。
