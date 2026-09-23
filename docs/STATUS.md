@@ -18,7 +18,11 @@
 
 ## 当前待验证假设
 
-- 上下文/证据保留、工具选择、停止策略和可靠执行仍需基于新的失败样本逐项对照；尚未预先承诺哪一项有效。
+- 覆盖：network_policy 失败的主因是没有查询故障对象类（11/12 从未查询 NetworkPolicy）。先用离线预言探针 E3/E3b 检验"看到证据就能归因"；通过后，以开局命名空间对象清单（T4b）在 floor 类上做 live 检验（≥3/6，单侧 Fisher p≈0.015–0.025）。
+- 归因：已看到证据仍失败的 8 条集中在"选错对象"（NML 失败 D1=0，readiness 失败 D2≤0.33）。用最终答案契约（F1）和新上下文结论撰写（A2）的最后一步重放来检验。
+- 噪声：NML 的官方判定由 judge 噪声主导（离线 5 次重评中 3/6 条目不稳定，多数判定 3/6，而官方为 1/6）；NML 结论必须经过多次重评，不能依据单次判定。
+- 成本：日志标签合并可以无损减少 get_logs 字符 57.6%（累计输入字符 30.4%），只作为成本项，不作为诊断提升。
+- 离线实验 E2b–E10 因模型 API 账户欠费中断，判定标准已预先登记；恢复后从闸门 G1 继续。本轮没有启动 live。
 - evidence 包用于代码审阅和结果核查，不是 Agent 输入、skills、训练 prompt 或 judge 的额外输入。
 
 ## 审阅入口
@@ -27,3 +31,5 @@
 - 评测摘要：`docs/reports/2026-09-21-campaign-measurements.md`。
 - 逐 attempt 脱敏证据：`evidence/diagnosis-20260921/`（生成后提交）。
 - evidence 生成器：`scripts/export_campaign_evidence.py`。
+- Harness 改进候选、排序与否决闸门：`docs/plans/2026-09-23-harness-improvement-candidates.md`。
+- 离线复算与实验原始输出（本地，被忽略）：`artifacts/offline-20260923/`。
