@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 
 from filelock import FileLock
@@ -11,6 +12,7 @@ from project_paths import kubeconfig
 BUSINESS_NAMESPACES = {"hotel-reservation", "social-network", "astronomy-shop", "observe"}
 
 
+@contextmanager
 def cluster_lock():
     path = Path(
         os.environ.get(
@@ -18,7 +20,29 @@ def cluster_lock():
         )
     )
     path.parent.mkdir(parents=True, exist_ok=True)
-    return FileLock(path, timeout=0)
+    lock = FileLock(path, timeout=0)
+    with lock:
+        previous = os.environ.get("SRE_CLUSTER_LOCK_FD")
+        if os.name == "posix":
+            # filelock is pinned in uv.lock. Its flock descriptor must outlive a
+            # killed supervisor whenever an evaluation child is still running.
+            os.environ["SRE_CLUSTER_LOCK_FD"] = str(lock._context.lock_file_fd)
+        try:
+            yield lock
+        finally:
+            if previous is None:
+                os.environ.pop("SRE_CLUSTER_LOCK_FD", None)
+            else:
+                os.environ["SRE_CLUSTER_LOCK_FD"] = previous
+
+
+def cluster_subprocess_options():
+    descriptor = os.environ.get("SRE_CLUSTER_LOCK_FD")
+    if os.name != "posix" or descriptor is None:
+        return {}
+    fd = int(descriptor)
+    os.fstat(fd)
+    return {"pass_fds": (fd,)}
 
 
 def health_snapshot():

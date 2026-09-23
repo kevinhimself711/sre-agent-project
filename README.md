@@ -8,19 +8,25 @@
 
 PR CI 在 GitHub Linux runner 重建固定上游并执行离线回归，不读取节点或模型凭据。`ci-gate` 汇总检查结果；四个需要真实 Node MCP 服务的 `everything_stdio` 测试不属于此离线子集。私有仓库当前账号不支持分支 rulesets，因此 CI 提供检查证据，尚无平台强制合并门禁。
 
-真实评测通过 `Frozen diagnosis campaign` 手动工作流执行，仅允许 `main` 且要求同一 SHA 的 CI 成功。`dev` 为 24 次，之后 `validation` 搭配 `resume=true` 为 12 次；候选由冻结规则选择。工作流使用 pci-2 专用 runner，运行目录为 `~/sre-agent-eval/workspaces/<commit>`，与开发源码分开。依赖环境仅在锁文件一致时复用；模型上下文由对应源码和镜像运行，构建仍是节点环境打包，尚未声称可独立重建镜像。
+真实评测通过 `Frozen diagnosis campaign` 手动工作流执行，仅允许 `main` 且要求同一 SHA 的 CI 成功。本轮 `dev` 24 次和 `validation` 12 次有效测量已完成，结果见 `docs/reports/2026-09-21-campaign-measurements.md`。工作流使用 pci-2 专用 runner，运行目录为 `~/sre-agent-eval/workspaces/<commit>`，与开发源码分开。依赖环境仅在锁文件一致时复用；模型上下文由对应源码和镜像运行，构建仍是节点环境打包，尚未声称可独立重建镜像。
 
-当前网络下，在 Windows 启动一次工作流 worker 并保持此终端运行：
+当前网络下，在 Windows 启动持久代理 worker。进程与脱敏日志写入忽略的
+`artifacts/`，终端或 Codex 回合结束不会断开正在运行的 workflow：
 
 ```powershell
-uv run python scripts/remote.py --proxy run 'cd "$HOME/sre-agent-runner"; export PATH="$HOME/sre-agent-project/tools-venv/bin:$PATH"; ./run.sh --once'
+uv run python scripts/runner_proxy.py start
+uv run python scripts/runner_proxy.py status
+# 冻结实验和产物上传全部结束后：
+uv run python scripts/runner_proxy.py stop
 ```
 
-它为该次工作流保留临时网络代理，任务完成后 worker 退出；下一阶段重新启动。API key 由私有仓库 `BAILIAN_API_KEY` secret 注入，不放入命令或配置。模型与集群参数来自 `configs/baseline.env`，四种策略配置来自 `configs/campaign-20260921.json`。所有入口共享节点文件锁；中断后环境未恢复时拒绝启动下一题。
+代理 controller 会先确认 runner 已进入 `Listening for Jobs` 再返回；重复启动会拒绝创建第二个 runner。API key 由私有仓库 `BAILIAN_API_KEY` secret 注入，不放入命令或配置。模型与集群参数来自 `configs/baseline.env`，冻结实验四种策略来自 `configs/campaign-20260921.json`。最终推荐不启用诊断复核；需保留 MCP 错误语义修正时，在 baseline 后 source `configs/recovery.env`。所有入口共享节点文件锁；中断后环境未恢复时拒绝启动下一题。
 
 节点直接运行时，先设置 `SRE_PROJECT_ROOT`、`SRE_AGENT_IMAGE`，再 source 对应 `configs/baseline.env`，使用该工作区 `.venv/bin/python scripts/campaign.py --manifest configs/campaign-20260921.json --phase dev`；已有 campaign 必须显式添加 `--resume`。恢复仅在 episode 边界进行，不能重放结果不确定的提交。
 
 每个 attempt 的原始证据、官方结果和验收位于工作区 `artifacts/campaigns/diagnosis-20260921/`；GitHub 仅上传汇总和产物哈希。使用 `uv run python scripts/collect_artifacts.py --remote-root <绝对工作区路径> --campaign --output artifacts/pci-2-campaign` 收集原始证据。冻结验证集不导出 SFT 样本，复核前草稿不作为正样本目标。
+
+campaign 收尾会自动生成小型脱敏审阅包到 `artifacts/publish/evidence/<campaign_id>/`，其中包含 `attempts.jsonl`、各 harness 首个实际 prompt/schema 的 `prompt.txt` 和哈希清单；请求全文、工具结果全文和原始 trace 不进入该包。把已下载的 campaign 发布到根仓库时运行 `uv run python scripts/export_campaign_evidence.py artifacts/pci-2/campaigns/<campaign_id> --output evidence/<campaign_id>`，提交前检查包不进入 Agent 镜像、skills 或任何 prompt。需要只给聚合数字时加 `--sealed`。
 
 后续镜像 CD 才会从锁文件构建并发布 GHCR digest，本轮不自动部署其他集群。
 
@@ -52,7 +58,7 @@ Docker Hub 在节点上不可直连。运行部署时可另开 `remote.py --prox
 
 环境验证：`python3 scripts/check_network_policy.py`，验证正常连通、策略阻断、删除策略后恢复，并删除探测 namespace。
 
-Social Network 的两个上游 init container 还会在线克隆 DeathStarBench。当前网络下，等 `media-frontend` / `nginx-thrift` deployment 创建后、故障注入前，在另一个终端运行下列命令。它只给这两个 init container 配置临时代理，固定源码为 `configs/baseline.env` 记录的 commit；初始化完成后监听关闭，不修改 agent 网络权限：
+Social Network 的两个上游 init container 需要在线取得 DeathStarBench。当前网络下，等 `media-frontend` / `nginx-thrift` deployment 创建后、故障注入前，在另一个终端运行下列命令。脚本通过临时代理下载 `configs/baseline.env` 固定 commit 的 source archive，连续确认当前 Deployment generation 完整 rollout 后关闭监听；它不修改 agent 网络权限：
 
 ```powershell
 python scripts/remote.py --proxy run 'source "$HOME/sre-agent-project/configs/baseline.env"; python3 "$HOME/sre-agent-project/scripts/bootstrap_social_proxy.py"'

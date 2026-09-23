@@ -11,7 +11,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from cluster_guard import cluster_lock, health_snapshot
+from cluster_guard import cluster_lock, cluster_subprocess_options, health_snapshot
+from export_campaign_evidence import export as export_campaign_evidence
 from project_paths import project_root
 
 VARIANTS = ("baseline", "review", "recovery", "combined")
@@ -153,6 +154,7 @@ def collect_result(directory, job, returncode):
         "score": None,
         "tokens": {},
         "cost": None,
+        "result_status": "missing",
     }
     if not files:
         return item
@@ -160,8 +162,10 @@ def collect_result(directory, job, returncode):
         rows = list(csv.DictReader(handle))
     if len(rows) != 1:
         item["execution"] = "result_format_error"
+        item["result_status"] = f"row_count_{len(rows)}"
         return item
     row = rows[0]
+    item["result_status"] = "ok"
 
     def decoded(key, default=None):
         value = row.get(key, "")
@@ -259,6 +263,7 @@ def run_one(root, spec, job, directory):
             stdout=output,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            **cluster_subprocess_options(),
         )
         # Network helpers only affect environment initialization, never the agent's permissions.
         helpers.append(
@@ -268,6 +273,7 @@ def run_one(root, spec, job, directory):
                 stdout=output,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
+                **cluster_subprocess_options(),
             )
         )
         try:
@@ -406,6 +412,7 @@ def public_summary(state):
         "repeated_tool_calls",
         "review_events",
         "artifacts",
+        "result_status",
     }
     return {
         "schema_version": 1,
@@ -467,6 +474,11 @@ def main():
                 provenance,
                 args.resume,
             )
+            if all(completed(r) for r in selected_records(state, args.phase)):
+                export_campaign_evidence(
+                    destination,
+                    root / "artifacts/publish/evidence" / spec["campaign_id"],
+                )
         finally:
             state_path = destination / "state.json"
             if state_path.exists():

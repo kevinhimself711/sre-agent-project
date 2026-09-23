@@ -65,6 +65,12 @@ jobs:
           args=()
           if [ "$RESUME" = true ]; then args+=(--resume); fi
           "$SRE_PROJECT_ROOT/.venv/bin/python" "$SRE_PROJECT_ROOT/scripts/campaign.py" --manifest "$SRE_PROJECT_ROOT/configs/campaign-20260921.json" --phase "$PHASE" "${args[@]}"
+      - name: Publish native outcomes without raw test output
+        if: always()
+        run: |
+          if [ -n "${SRE_PROJECT_ROOT:-}" ] && [ -f "$SRE_PROJECT_ROOT/artifacts/native-evals.xml" ]; then
+            "$SRE_PROJECT_ROOT/.venv/bin/python" "$SRE_PROJECT_ROOT/scripts/publish_native_results.py" "$SRE_PROJECT_ROOT/artifacts/native-evals.xml" "$SRE_PROJECT_ROOT/artifacts/publish/native-evals.xml"
+          fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:

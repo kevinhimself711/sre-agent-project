@@ -11,6 +11,7 @@ import select
 import socket
 import socketserver
 import subprocess
+import sys
 import threading
 import time
 from urllib.parse import urlparse
@@ -19,8 +20,36 @@ from urllib.request import urlopen
 from project_paths import project_root
 
 
+def archive_init_command(command: str, source_url: str, revision: str) -> str:
+    """Replace the upstream Git clone with an immutable source archive download."""
+    archive_url = "https://codeload.github.com/delimitrou/DeathStarBench/tar.gz/" + revision
+    if archive_url in command and command.startswith("wget -q -O /tmp/deathstarbench.tar.gz "):
+        return command
+    prefixes = (
+        f"git clone {source_url} /DeathStarBench && ",
+        f"git clone --depth 1 {source_url} /DeathStarBench && ",
+    )
+    tail = next((command[len(prefix) :] for prefix in prefixes if command.startswith(prefix)), None)
+    if tail is None:
+        raise ValueError("Unexpected DeathStarBench init command")
+    setup = (
+        f"wget -q -O /tmp/deathstarbench.tar.gz {archive_url}"
+        " && mkdir -p /DeathStarBench"
+        " && tar -xzf /tmp/deathstarbench.tar.gz --strip-components=1 -C /DeathStarBench"
+    )
+    return f"{setup} && {tail}"
+
+
+def stable_rollout_count(deployments, complete, previous: int) -> int:
+    """Require stable current-generation readiness before closing the proxy."""
+    return previous + 1 if all(complete(deployment) for deployment in deployments) else 0
+
+
 def main():
     root = project_root()
+    sys.path.insert(0, str(root / "repos/sregym"))
+    from sregym.service.rollout import deployment_rollout_complete
+
     k = [str(root / "bin/kubectl"), "--kubeconfig", str(root / "configs/kubeconfig")]
     assert (
         subprocess.check_output([*k, "config", "current-context"], text=True).strip()
@@ -50,7 +79,7 @@ def main():
                 while True:
                     readable, _, _ = select.select([self.request, upstream], [], [], 30)
                     if not readable:
-                        return
+                        continue
                     for source in readable:
                         data = source.recv(65536)
                         if not data:
@@ -83,12 +112,7 @@ def main():
                 for c in deployment["spec"]["template"]["spec"]["initContainers"]
                 if c["name"] == "alpine-container"
             )
-            assert source_url in init["args"][-1], "Unexpected init command"
-            command = init["args"][-1].replace(
-                " && ",
-                f" && git -C /DeathStarBench fetch --depth 1 origin {revision} && git -C /DeathStarBench checkout --detach {revision} && ",
-                1,
-            )
+            command = archive_init_command(init["args"][-1], source_url, revision)
             patch = {
                 "spec": {
                     "template": {
@@ -126,6 +150,7 @@ def main():
                 {
                     "source": source_url,
                     "revision": revision,
+                    "transport": "github-source-archive",
                     "deployments": ["media-frontend", "nginx-thrift"],
                     "scope": "init containers only",
                     "proxy": address,
@@ -135,32 +160,33 @@ def main():
             + "\n"
         )
         deadline = time.monotonic() + 600
+        stable_polls = 0
         while time.monotonic() < deadline:
-            ready = True
+            deployments = []
             for name in ("media-frontend", "nginx-thrift"):
-                d = json.loads(
-                    subprocess.check_output(
-                        [
-                            *k,
-                            "get",
-                            "deployment",
-                            name,
-                            "-n",
-                            "social-network",
-                            "-o",
-                            "json",
-                        ]
+                deployments.append(
+                    json.loads(
+                        subprocess.check_output(
+                            [
+                                *k,
+                                "get",
+                                "deployment",
+                                name,
+                                "-n",
+                                "social-network",
+                                "-o",
+                                "json",
+                            ]
+                        )
                     )
                 )
-                s = d.get("status", {})
-                ready &= (
-                    s.get("observedGeneration", 0) >= d["metadata"]["generation"]
-                    and s.get("updatedReplicas") == 1
-                    and s.get("readyReplicas") == 1
-                )
-            if ready:
+            stable_polls = stable_rollout_count(
+                deployments, deployment_rollout_complete, stable_polls
+            )
+            if stable_polls >= 3:
                 print(
-                    "Both init containers finished at recorded source revision; temporary proxy closing.",
+                    "Both init containers finished at the recorded source revision; "
+                    "temporary proxy closing.",
                     flush=True,
                 )
                 server.shutdown()

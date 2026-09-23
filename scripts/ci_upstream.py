@@ -55,6 +55,8 @@ def main():
             "tests/service/test_k8s_proxy.py",
             "tests/service/test_credential_mounts.py",
             "tests/service/test_container_images.py",
+            "tests/oracles/test_rollout_completion.py",
+            "tests/service/test_rollout_consumers.py",
         ]
         args = []
     else:
