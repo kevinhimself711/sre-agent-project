@@ -4,6 +4,8 @@
 
 状态：计划。本轮没有启动 live campaign。离线实验 E1、E2 已经完成。从 E2b 开始，百炼 API 返回 `400 Arrearage`（账户欠费），实验中断。E2b–E10 按第 5 节的闸门补做，判定标准已在本文预先登记，登记时尚未看到这些实验的结果。
 
+修订（2026-09-25）：百炼账户欠费后，用户指定后续全部改用 newapi 网关（OpenAI 兼容接口）上的 `glm-5.3-flash`，agent 与离线 judge 使用同一模型。G1 按第 5 节的"修订 v2"执行，修订内容在任何 glm 实验结果之前写入并提交。基于 qwen3.8-max 的历史结论和历史对照，适用范围随之调整，见第 1.7 节与 G3、G4。
+
 范围：只改 Holmes 层和 driver 层。不修改 benchmark 的 MCP 服务、权限、故障注入或评分。本文是计划，不是结果报告。候选条目里的数字只用来描述问题证据或离线上界，不代表诊断提升。
 
 依据：
@@ -134,6 +136,7 @@
 - 功效：n=6、阈值 3/6 时，真实成功率为 30% / 50% / 70% 的检出概率分别是 0.26 / 0.66 / 0.93。n=12 对 0/12、阈值 4/12 时，真实率 50% 的功效是 0.93。
 - 中等基线类的样本量：若要以 80% 功效检出 50% → 80%，每臂需要 36 次；检出 33% → 83%，每臂需要 15 次。当前预算做不到，所以结果类结论只在 floor 类（network_policy）上做，其他类只报告机制指标和描述统计。
 - 噪声的影响：非 NML 类的 judge 噪声和最后一步噪声都接近 0，可以用单次判定。NML 必须每个答案重评 3–5 次取多数或均值，不做显著性宣称。
+- 模型切换的影响（2026-09-25）：上表的历史对照（network_policy 0/12）来自 qwen3.8-max agent，不适用于 glm-5.3-flash agent。live 对照改为 glm 下的同期对照，见 G3、G4 修订。E1、E2 的噪声数字只描述 qwen judge 与 qwen agent；glm 的噪声底由 E1g、E2b 重新测量。
 
 ## 2. 已确定工程项
 
@@ -466,6 +469,13 @@
 
 **L5 调高 max_steps。** 不做，见第 7 节。
 
+**L6 工具撤回时的收口指令（工程项，2026-09-25 新增）**
+
+- 问题证据：Holmes 在最后一步只把 tools 置为 None（`tool_calling_llm.py:1176`），不附加任何指令。qwen 从未用完预算，所以没有暴露。换成 glm-5.3-flash 后，离线探测中不给工具时，模型常常继续"计划调用工具"，有时一直写到 8192 上限而没有结论。
+- 改动与位置：在 `tool_calling_llm.py` 中，当 `tools is None` 且是因预算用完而撤回工具时，追加一条固定的 user 消息（与第 5 节的文本 N 相同）。只在预算用完时触发，所以正常收口的轨迹不受影响。
+- 验收：单元测试覆盖"最后一步带收口指令"；E2n 测量无结论输出的比例，作为问题证据。
+- 权重：低中；可行性：高。按构造只保证有结论，不宣称提分。
+
 ### 3.8 子 agent 层（Holmes 不支持，只能在 driver 编排）
 
 **A1 并行专项子调查（配置、日志、网络），暂缓**
@@ -538,6 +548,13 @@
 - R6 统计与 holdout：工程项 8。
 - R7 证据哈希：工程项 9。
 
+**R8 模型与服务切换适配（工程项，2026-09-25 新增，G3 之前必须完成）**
+
+- 问题证据：新网关对 `enable_thinking=false` 返回 400（"该模型始终思考"）。而 driver（`agent.llm.args.update(extra_body={"enable_thinking": False})`）、`run_preflight`、`scripts/model_preflight.py`、`configs/baseline.env` 的 `LLM_EXTRA_BODY_JSON`/`CLASSIFIER_EXTRA_BODY_JSON`、`configs/holmes-models.yaml` 都在使用这个参数。`scripts/campaign.py` 把 judge 模型写死为 `openai/qwen3.8-max`；`scripts/remote.py --bailian` 从百炼密钥文件注入 key。
+- 改动与位置：把 thinking 参数改为按服务配置（本网关用 `{"thinking": {"type": "disabled"}}`）；把模型、api_base 和 key 的来源改为新的忽略文件或 secret；新 campaign 使用新的 manifest，不修改冻结的 `configs/campaign-20260921.json`。
+- 验收：preflight 通过；首个 model_request 与 judge 请求都记录实际参数和 reasoning_tokens；在 trace 中能区分"关闭思考"与"不可关闭"。
+- 边界：这是环境与服务的变更，不是 harness 改进。它会改变 agent 与 judge，因此历史 qwen 结果不能与之后的结果直接比较。
+
 **R3 thinking 开关（只在最后一步，或全程）**
 
 - 问题证据：campaign 固定 `enable_thinking=false`，目前没有任何 thinking 数据。
@@ -601,6 +618,7 @@
 | 8 | 8 统计与 holdout | 离线 | 中 |
 | 9 | 7 环境复用（先做 A/A） | 集群 | 高（后端与吞吐） |
 | 10 | 建议新增：P2 精简禁用列表、T5 移除回滚工具、T6 空结果标注 | 离线 | 低 |
+| 11 | 2026-09-25 新增：R8 模型与服务切换适配（G3 之前必须完成）、L6 工具撤回时的收口指令 | 离线；验证需要 API | 低中 |
 
 ## 5. 实施顺序与否决闸门
 
@@ -645,6 +663,76 @@
   2. 若 T4b 不可用而 E8 通过，用 S1/S2。
   3. 若 E4 或 E10 通过，F1 或 A2 作为归因臂。
 
+**G1 预先登记修订 v2（2026-09-25，写于任何 glm-5.3-flash 实验结果之前）**
+
+修订原因：百炼账户欠费，用户指定后续全部改用 newapi 网关与 `glm-5.3-flash`。修订前只做了服务探测，没有产生任何实验结果。探测结论如下：
+
+- 该模型"始终思考"。传 `enable_thinking=false` 返回 400。`thinking={"type":"disabled"}` 可以使用，但在长请求上仍会产生 100–300 个推理 token；`reasoning_effort` 取 low/high/max 时推理量增加。
+- 历史上最长的最终请求（qwen 计 154k token）在 glm 下为 133k token，可以放下。前缀缓存有效：第二次请求几乎全部命中缓存。
+- 温度 0 仍不确定：同一请求两次的输出不同。
+- 不给工具强制收口时，模型常常继续"计划调用工具"，有时一直写到 8192 上限而没有结论（见 L6）。
+
+协议变更：
+
+1. 模型与参数：agent 与离线 judge 都用 `glm-5.3-flash`，温度 0，`thinking={"type":"disabled"}`，逐次记录 reasoning_tokens。agent 的 max_tokens 为 8192，judge 为 4096。judge 代码仍是 SREGym DiagnosisJudge 原码，只替换后端。
+2. 强制收口：一律在最后追加一条 user 消息 N（原文见下）；各处理臂的附加文本接在 N 之后。E2b 即"原上下文 + N"。
+3. 新增 E1g：用 glm judge 对 36 份原提交各评 5 次，报告噪声底，以及与官方（qwen judge）判定的一致率。这只是标定，不设淘汰。如果逐样本一致率低于 80%，报告中必须写明：G1 的结论只在 glm judge 的尺度上成立。
+4. 新增 E2n：不追加 N 的强制收口（与 Holmes 最后一步的行为一致），36 × 3，报告无结论输出的比例（finish=length，或答案中没有诊断）以及判定结果。只做测量，用来支撑 L6。
+5. 集合定义不变：8 条"看到证据但归因错误"、16 条原成功、11 条"未看到证据的 network_policy"，仍按官方结果和第 1.3 节划分。所有比较都相对于 E2b（同样是 glm）。
+6. E3c 使用近似清单：在该 attempt 的首条 user 消息后追加名字清单（取 #23 输出中的 Deployment、Service、ConfigMap 名，再加上 NetworkPolicy 名），在最后一个切点允许调用工具，记录下一步动作。如果模型取回 NetworkPolicy，就用 E3 的真实 YAML 作为结果，再追加 N 收口并判分。
+7. E8 细化：
+   - 切点是每条 network_policy attempt 的每次 model_request。
+   - 三臂：base、S1、S2。S1 按 Holmes 模板（`base_user_prompt.jinja2`、`generic_ask.jinja2`）渲染 Skill Usage 段和 Skill Catalog，并加入 fetch_skill 工具；模型获取 skill 时，按 Holmes 的包装格式返回 skill 内容，再看它的下一步。
+   - 判据：下一步执行的 kubectl 命令涉及 NetworkPolicy。S1 看取完 skill 之后的那一步。
+   - 淘汰条件补充：S1 或 S2 还必须比 base 臂至少多 2 个 attempt。
+8. E9 推迟到 G3 之后：用 glm 回放 qwen 的轨迹，只能测跨模型的分歧，测不出回放保真度。
+9. E5 改为 `reasoning_effort=high` 对比 E2b（disabled），因为该模型无法完全关闭思考。
+10. judge 次数不变：NML 的每个答案 judge 3 次取多数；其余答案 judge 1 次。
+11. 文本 N、F1 契约 C、S1/S2 的 skill 全文如下，已通过泄漏审计原型：对 120 个题目 ID、740 个注入实现字面量、93 条 root_cause 描述中的 5,474 个 4-gram，全部 0 命中；阳性对照全部命中。已知缺口：f-string 前缀后面紧跟字母时不会命中，G0 代码化时修复。文件 SHA256：`texts.py` 为 `e068c134bd7ddf76…`，`leakage_audit.py` 为 `996850b59ea7018b…`。
+
+文本 N（收口指令）：
+
+```text
+Tool use has ended for this investigation; no further tool calls are possible. Do not describe or plan more tool calls. Using only the evidence above, write your final diagnosis of the faulty component and its root cause.
+```
+
+文本 C（F1 契约，接在 N 之后）：
+
+```text
+Structure the final diagnosis as follows:
+1. Faulty object: the specific Kubernetes object whose configuration or state is wrong (kind, name, namespace, and the field or value at fault). If a configuration object causes other workloads to fail, the faulty object is that configuration object, not the workloads that suffer.
+2. Mechanism: how this fault produces the observed symptoms.
+3. Evidence: the specific tool outputs that support it.
+4. Affected components: workloads impacted downstream, labelled as affected rather than as the root cause.
+5. Ruled out: alternatives you considered and why the evidence rejects them, for example errors that only occurred during startup and have since recovered.
+6. Unverified: anything you could not confirm.
+```
+
+S1/S2 skill（名称 `kubernetes-service-degradation-triage`）：
+
+```text
+description: Use when an application on Kubernetes shows failing or timing-out requests, unavailable services, or pods that cannot be created or never reach Ready, while the cause is still unknown.
+
+# Kubernetes service degradation triage
+
+1. Inventory the namespace. List every namespaced resource kind you are allowed to read
+   (`kubectl api-resources --namespaced=true -o name`, then `kubectl get <kind> -n <namespace>` for each kind,
+   one command per call, no shell pipes). Record every object that exists, not only pods, services and deployments.
+2. For each object that selects, admits, routes to, schedules, configures or constrains the affected workloads
+   (through label selectors, namespace-wide scope, or references), read its spec with `-o yaml` and decide
+   whether it explains the symptoms.
+3. Compare what the workloads need with what those objects allow or provide: selectors against pod labels and
+   endpoints; probes against container ports and paths; admission and resource requirements against pod specs;
+   traffic rules against the communication paths the application uses; referenced ConfigMaps, Secrets, service
+   names and DNS against what exists; scheduling constraints against node labels and taints.
+4. Use timestamps. Separate errors that persist now from errors that only occurred during startup and have since
+   recovered. Errors that also appear in healthy components are weak evidence.
+5. In the diagnosis, name the object whose configuration or state is wrong as the faulty component, state the
+   mechanism, and list impacted workloads separately as affected.
+```
+
+外部效度：离线结果描述的是"glm-5.3-flash 在 qwen 收集的上下文上的行为"，只能用于否决和排序，不能直接外推到 glm 作为 agent 的 live 表现。
+
 **G2 集群，只读探测和原生 eval（不是 campaign）**
 
 - 在集群上验证工程项 3：空 limitrange 返回 "No resources found"。
@@ -665,7 +753,11 @@
   - 报告每 attempt 被拒数（历史值：管道加 `get all` 为 2.89，全部为 3.28）、token 和缓存命中率（与 88.4% 相比，允许 ±2 个百分点）。
   - 不做结果宣称。
 
+G3 修订（2026-09-25）：先完成 R8，再在 glm-5.3-flash（agent 与 judge）下重建 baseline-v2。network_policy 是否仍是 floor 类，由 G3 决定：必须为 0/3。历史 qwen 对照不再合并使用。
+
 **G4 live：候选对照（floor 类）**
+
+G4 修订（2026-09-25，取代下文按历史对照计算的阈值）：对照改为 glm 下的 baseline-v2 同期对照 6 次，与 G3 的 0/3 合并为 0/9。处理组每臂 6 次：≥3/6 为显著（单侧 Fisher p=0.044）；4/6 时 p=0.011；2/6 不显著，停止；≤1/6 淘汰。如果同期对照出现成功，就按实际对照重新计算 p，不改阈值、不补做。
 
 - 最多 2 个臂，每臂 network_policy 做 6 次。
 - 判定：
