@@ -1,6 +1,6 @@
 # 当前状态
 
-最后更新：2026-09-23
+最后更新：2026-09-25
 
 ## 代码与实验入口
 
@@ -18,11 +18,12 @@
 
 ## 当前待验证假设
 
-- 覆盖：network_policy 失败的主因是没有查询故障对象类（11/12 从未查询 NetworkPolicy）。先用离线预言探针 E3/E3b 检验"看到证据就能归因"；通过后，以开局命名空间对象清单（T4b）在 floor 类上做 live 检验（≥3/6，单侧 Fisher p≈0.015–0.025）。
-- 归因：已看到证据仍失败的 8 条集中在"选错对象"（NML 失败 D1=0，readiness 失败 D2≤0.33）。用最终答案契约（F1）和新上下文结论撰写（A2）的最后一步重放来检验。
-- 噪声：NML 的官方判定由 judge 噪声主导（离线 5 次重评中 3/6 条目不稳定，多数判定 3/6，而官方为 1/6）；NML 结论必须经过多次重评，不能依据单次判定。
-- 成本：日志标签合并可以无损减少 get_logs 字符 57.6%（累计输入字符 30.4%），只作为成本项，不作为诊断提升。
-- 离线实验 E2b–E10 因模型 API 账户欠费中断，判定标准已预先登记；恢复后从闸门 G1 继续。本轮没有启动 live。
+- 模型与服务：自 2026-09-25 起，全部改用 newapi 网关上的 glm-5.3-flash（agent 与 judge）。live 管线仍按百炼和 `enable_thinking` 编写，G3 之前必须完成 R8 适配；历史 qwen 结果与之后的结果不能直接比较。
+- 覆盖：离线预言探针已通过。在 glm 下，给 network_policy 注入真实对象后多数成功 9/11，安慰剂 1/11；只给名字清单时，7/11 会主动取回。待验证：开局命名空间对象清单（T4b，按预先登记规则加上 F1）能否在 live floor 类上达到 ≥3/6（对照为 glm 同期的 0/9，p=0.044）。
+- 归因：新上下文结论撰写（A2）离线通过，归因错误组多数成功 7 对 5，原成功不下降；F1 契约单独使用、提交抽取、skill 与 thinking 均已淘汰。待验证：A2 在 live 中的效果。由于 glm judge 无法区分 NML 的定位错误，A2 的 live 设计需要在 G4 之前修订。
+- 噪声与 judge：qwen judge 下，NML 判定由噪声主导；glm judge 则把 5/5 条官方 NML 失败都判为成功。NML 结论必须注明 judge 模型，并经过多次重评。
+- 成本：标签合并可无损减少 get_logs 字符 57.6%；在 glm 最后一步重放中，prompt token 减少 37.2%（加折叠为 54.3%），判定非劣。只作为成本项。
+- 本轮没有启动 live。
 - evidence 包用于代码审阅和结果核查，不是 Agent 输入、skills、训练 prompt 或 judge 的额外输入。
 
 ## 审阅入口
@@ -32,4 +33,5 @@
 - 逐 attempt 脱敏证据：`evidence/diagnosis-20260921/`（生成后提交）。
 - evidence 生成器：`scripts/export_campaign_evidence.py`。
 - Harness 改进候选、排序与否决闸门：`docs/plans/2026-09-23-harness-improvement-candidates.md`。
-- 离线复算与实验原始输出（本地，被忽略）：`artifacts/offline-20260923/`。
+- 离线复算与实验原始输出（本地，被忽略）：`artifacts/offline-20260923/`（qwen E1/E2），`artifacts/offline-20260925/`（glm G1）。
+- 离线否决实验 G1 结果：`docs/reports/2026-09-25-offline-g1-glm.md`。
